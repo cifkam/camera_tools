@@ -28,12 +28,13 @@
   #info.closed { padding: 6px 12px; }
   @media (max-width: 700px) {
     #info { left: 8px; right: 8px; bottom: 8px; max-width: none; font-size: 11px; line-height: 1.45; padding: 8px 26px 8px 10px; }
+    body #help { right: auto; }
     #help .hint { display: none; }
   }
   @media (pointer: coarse) { #help .hint { display: none; } }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   .warn { color: #ffb347; }
-  #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
+  #help { position: absolute; left: 12px; right: 340px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
   body .lil-gui.root { border: 1px solid #666; }
   /* checkbox rows: checkbox first, label after, so long labels never push the box around */
   body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
