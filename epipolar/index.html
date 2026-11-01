@@ -692,12 +692,9 @@ function rebuild3D(sel) {
     });
   }
 
-  // the ray from camera k's centre to a scene point X; when X lies nearer than the (enlarged) image plane, on through X
-  // to the plane, where its image is
-  const rayTo = (k, X) => {
-    const C = cams[k].C, z = Cam.mulv(cams[k].R, Cam.sub(X, C))[2], d = planeDist(k);
-    return [C, z > 0 && z < d ? Cam.add(C, Cam.scale(Cam.sub(X, C), d / z)) : X];
-  };
+  // the ray from camera k's centre to a scene point X, ending there, on the edge of the epipolar plane (also when X lies
+  // nearer than the enlarged image plane)
+  const rayTo = (k, X) => [cams[k].C, X];
 
   // the selection: its rays, and the epipolar plane through it and both centres
   if (sel) {
