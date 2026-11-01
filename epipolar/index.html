@@ -156,7 +156,7 @@ const SHAPES = {
   grid: { label: 'ground grid', geom: Cam.groundGrid(10, 1), color: COL.grid, noVertices: true },
 };
 const PLACES = {
-  board: [-1.6, 0.6, 0, 20], cube: [2.4, 0.4, 0, 25], pyramid: [-0.4, 3.2, 0, 0], cylinder: [-2.9, 3.0, 0, 0],
+  board: [-1.6, 0.6, 0, 20], cube: [2.4, 0.4, 0, 25], pyramid: [-0.3, 3.2, 0, 0], cylinder: [-2.9, 3.0, 0, 0],
 };
 const SCENE_CENTRE = [0, 1.8, 0.6];
 const placed = key => Cam.placeVertices(SHAPES[key].geom.vertices, PLACES[key] ? PLACES[key].slice(0, 3) : [0, 0, 0], PLACES[key] ? PLACES[key][3] : 0);
@@ -169,17 +169,27 @@ const aimed = (C, target = SCENE_CENTRE) => { const a = Cam.lookAt(C, target); r
 // whole setups of the two cameras: the usual converging pair, a rectified stereo pair (same orientation, side by side:
 // the epipolar lines come out horizontal and the epipoles at infinity), and a camera moving straight ahead (the
 // epipole is then the focus of expansion, the lines radiate from it)
+// Each sets both cameras: their poses (cams) and their intrinsics (intr, the same 24 mm, 1280 × 720 unless given).
+const INTR = (focal = 24) => ({ focal, sensorW: 36, resolution: '1280×720', W: 1280, H: 720 });
 const PRESETS = {
-  'converging pair': [aimed([-2.2, -3.4, 1.6]), aimed([1.8, -3.9, 1.3])],
-  'rectified stereo': [{ x: -0.5, y: -4.5, z: 1.4, yaw: 0, pitch: -8, roll: 0 }, { x: 0.5, y: -4.5, z: 1.4, yaw: 0, pitch: -8, roll: 0 }],
-  'forward motion': [{ x: 0, y: -5.5, z: 1.1, yaw: 0, pitch: 0, roll: 0 }, { x: 0, y: -3.8, z: 1.1, yaw: 0, pitch: 0, roll: 0 }],
+  // (camera 2 at the height that puts the cube's front top edge, as camera 1 sees it, in an epipolar plane: both its
+  // corners lie on one epipolar line in each picture)
+  'converging pair': { cams: [aimed([-2.2, -3.4, 1.6]), aimed([1.8, -3.9, 1.212])] },
+  'rectified stereo': { cams: [{ x: -0.5, y: -4.5, z: 1.4, yaw: 0, pitch: -8, roll: 0 }, { x: 0.5, y: -4.5, z: 1.4, yaw: 0, pitch: -8, roll: 0 }] },
+  'forward motion': { cams: [{ x: 0, y: -5.5, z: 1.1, yaw: 0, pitch: 0, roll: 0 }, { x: 0, y: -3.8, z: 1.1, yaw: 0, pitch: 0, roll: 0 }] },
+  // a wide-angle camera close by and a long lens from afar (both see the whole scene): K₁ ≠ K₂, F = K₂⁻ᵀ E K₁⁻¹
+  'wide + tele (24 / 70 mm)': { cams: [aimed([-2.2, -3.4, 1.6]), aimed([3, -11, 2.4])], intr: [INTR(24), INTR(70)] },
 };
+const presetIntr = name => clone(PRESETS[name].intr || [INTR(), INTR()]);
 const DEFAULTS = {
   preset: 'converging pair',
-  focal: 24, sensorW: 36, resolution: '1280×720', W: 1280, H: 720,
-  cams: PRESETS['converging pair'],
+  // each camera's intrinsics and pose
+  intr: [INTR(), INTR()],
+  cams: PRESETS['converging pair'].cams,
   show: { board: true, cube: true, pyramid: true, cylinder: true, axes: true, grid: true },
-  selected: { kind: 'vertex', obj: 'pyramid', i: 4 },   // the apex; or { kind: 'pixel', cam, uv }
+  // the cube's front top-left corner as camera 1 sees it, picked in picture 1 (the front top edge lies in an epipolar
+  // plane: see the presets); or { kind: 'pixel', cam, uv }
+  selected: { kind: 'vertex', obj: 'cube', i: 7, cam: 0 },
   probe: null,   // metres along a picked pixel's ray: the point dragged along it (null: on the last but one marked)
   planeScale: 25, showPlane: true, showPencil: false, showSamples: true,
 };
@@ -190,7 +200,7 @@ function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
     for (const k of Object.keys(P)) if (k in saved) {
-      if (k === 'cams' && Array.isArray(saved.cams) && saved.cams.length === 2) P.cams = saved.cams.map((c, i) => ({ ...P.cams[i], ...c }));
+      if ((k === 'cams' || k === 'intr') && Array.isArray(saved[k]) && saved[k].length === 2) P[k] = saved[k].map((c, i) => ({ ...P[k][i], ...c }));
       else if (k === 'show') for (const j of Object.keys(P.show)) { if (saved.show && j in saved.show) P.show[j] = saved.show[j]; }
       else P[k] = saved[k];
     }
@@ -204,15 +214,16 @@ const RESOLUTIONS = { '640×480': [640, 480], '1280×720': [1280, 720], '1920×1
 const SENSORS = { 'full frame (36 mm)': 36, 'APS-C (23.5 mm)': 23.5, '1″ (13.2 mm)': 13.2, 'phone 1/1.3″ (9.8 mm)': 9.8 };
 
 // ----------------------------------------------------------------------------
-// The two cameras (the same intrinsics) and their epipolar geometry
+// The two cameras, each with its own intrinsics (focal length, sensor, resolution: cams[k].W × H), and their
+// epipolar geometry
 // ----------------------------------------------------------------------------
 let cams, geo;
 function buildCameras() {
-  const fx = Cam.fxFromFocal(P.focal, P.sensorW, P.W);
-  const K = Cam.intrinsics({ fx, fy: fx, cx: P.W / 2, cy: P.H / 2 });
-  cams = P.cams.map(c => {
+  cams = P.cams.map((c, k) => {
+    const { focal, sensorW, W, H } = P.intr[k], fx = Cam.fxFromFocal(focal, sensorW, W);
+    const K = Cam.intrinsics({ fx, fy: fx, cx: W / 2, cy: H / 2 });
     const R = Cam.rotationFromYawPitchRoll(c.yaw, c.pitch, c.roll), C = [c.x, c.y, c.z];
-    return { ...Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C) }), C };
+    return { ...Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C) }), C, W, H, focal };
   });
   const f = Epi.fundamental(cams[0], cams[1]);
   const baseline = Cam.norm(Cam.sub(cams[1].C, cams[0].C));
@@ -246,7 +257,7 @@ function pixelSelection(k, uv) {
     const phiAt = d => Math.atan2(d * dy, nb + d * dx), phiCap = phiAt(SAMPLE_CAP);
     // the angles at which the other camera's picture edges cut the plane: where the ray comes into its view and leaves
     let lo = phiAt(0.05), hi = phiCap;
-    const seg = lines[o] && Epi.clipLine(lines[o], 0, 0, P.W, P.H);
+    const seg = lines[o] && Epi.clipLine(lines[o], 0, 0, cams[o].W, cams[o].H);
     if (seg) {
       const phis = seg.map(px => { const u = Epi.pixelRay(cams[o], px).dir; return Math.atan2(Cam.dot(u, e2), Cam.dot(u, e1)); })
         .filter(a => a > 0 && a < phiCap).sort((a, c) => a - c);
@@ -279,7 +290,9 @@ function selection() {
       let near = 0;
       sel.depths.forEach((d, j) => { if (Math.abs(d - depth) < Math.abs(sel.depths[near] - depth)) near = j; });
       sel.samples[near] = X;
-      return { ...sel, vertex: { X, q, ok, at: near, depth } };
+      // the probe starts on the vertex itself: where the other camera really sees it
+      const probe = P.probe == null ? { depth, X } : sel.probe;
+      return { ...sel, probe, vertex: { X, q, ok, at: near, depth } };
     }
     return { kind: 'vertex', X, q, ok, lines: [ok[1] ? lineIn(0, q[1].uv) : null, ok[0] ? lineIn(1, q[0].uv) : null] };
   }
@@ -302,14 +315,37 @@ function strokeLines(ctx, tf, lines) {
   }
   ctx.stroke();
 }
-// a line a u + b v + c = 0 across the drawn area (the picture and its margin)
-function drawLine(ctx, tf, l, color, width, dash = []) {
+// a line a u + b v + c = 0 across camera k's drawn area (its picture and the margin)
+function drawLine(ctx, tf, k, l, color, width, dash = []) {
   if (!l) return;
-  const m = MARGIN * P.W, seg = Epi.clipLine(l, -m, -m, P.W + m, P.H + m);
+  const { W, H } = cams[k], m = MARGIN * W, seg = Epi.clipLine(l, -m, -m, W + m, H + m);
   if (!seg) return;
   ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
   ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * seg[0][0], tf.oy + tf.s * seg[0][1]); ctx.lineTo(tf.ox + tf.s * seg[1][0], tf.oy + tf.s * seg[1][1]); ctx.stroke();
   ctx.setLineDash([]);
+}
+// a point's name, above and to the left of its ring
+function pointLabel(ctx, tf, [u, v], text, lw) {
+  const X = tf.ox + tf.s * u - lw * 5, Y = tf.oy + tf.s * v - lw * 5;
+  ctx.font = `600 ${Math.round(lw * 12)}px system-ui, sans-serif`; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+  ctx.lineWidth = lw * 2.5; ctx.strokeStyle = 'rgba(22, 24, 27, 0.85)'; ctx.strokeText(text, X, Y);   // a dark halo
+  ctx.fillStyle = COL.selected; ctx.fillText(text, X, Y);
+}
+// a line's name, written along it just above, near its right end in the picture (upright whichever way it runs), or
+// its left end when a point labelled on it (avoid, in pixels) sits near the right one
+function labelLine(ctx, tf, k, l, text, color, lw, avoid = null) {
+  const seg = l && Epi.clipLine(l, 0, 0, cams[k].W, cams[k].H);
+  if (!seg) return;
+  const [a, b] = seg[0][0] <= seg[1][0] ? seg : [seg[1], seg[0]];
+  const right = !avoid || Math.hypot(avoid[0] - b[0], avoid[1] - b[1]) > 0.3 * cams[k].W;
+  const t = right ? 0.97 : 0.03, u = a[0] + (b[0] - a[0]) * t, v = a[1] + (b[1] - a[1]) * t;
+  ctx.save();
+  ctx.translate(tf.ox + tf.s * u, tf.oy + tf.s * v);
+  ctx.rotate(Math.atan2(b[1] - a[1], b[0] - a[0]));
+  ctx.font = `600 ${Math.round(lw * 12)}px system-ui, sans-serif`; ctx.textAlign = right ? 'right' : 'left'; ctx.textBaseline = 'bottom';
+  ctx.lineWidth = lw * 2.5; ctx.strokeStyle = 'rgba(22, 24, 27, 0.85)'; ctx.strokeText(text, 0, -lw * 2);   // a dark halo
+  ctx.fillStyle = color; ctx.fillText(text, 0, -lw * 2);
+  ctx.restore();
 }
 // the scene as camera k sees it
 function drawScene(ctx, tf, k, lw) {
@@ -344,9 +380,10 @@ function drawScene(ctx, tf, k, lw) {
 // the epipole itself (or, when it lies off the drawn area or at infinity, an arrow at the edge pointing to it)
 // (over the right half-turn about the centre, top to bottom: no two give the same line, whether the lines run through
 // an epipole in the picture or are parallel, from one at infinity, and they cover the picture's whole height)
+// (points of picture 1)
 const PENCIL_PTS = () => Array.from({ length: 8 }, (_, i) => {
-  const a = -Math.PI / 2 + Math.PI * (i + 0.5) / 8, r = 0.42 * P.H;
-  return [P.W / 2 + r * Math.cos(a), P.H / 2 + r * Math.sin(a)];
+  const { W, H } = cams[0], a = -Math.PI / 2 + Math.PI * (i + 0.5) / 8, r = 0.42 * H;
+  return [W / 2 + r * Math.cos(a), H / 2 + r * Math.sin(a)];
 });
 function drawEpipolar(ctx, tf, k, lw, sel) {
   if (geo.baseline < 1e-6) return;
@@ -354,11 +391,14 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
     // the same points of picture 1 give the lines in both: through e₁ in picture 1, F x in picture 2
     PENCIL_PTS().forEach((p, i) => {
       const l = k === 0 ? Epi.cross(geo.e[0], [p[0], p[1], 1]) : Epi.lineInImage2(geo.F, p);
-      drawLine(ctx, tf, l, PENCIL[i], lw * 0.8);
+      drawLine(ctx, tf, k, l, PENCIL[i], lw * 0.8);
     });
   }
   if (sel) {
-    drawLine(ctx, tf, sel.lines[k], COL.epi, lw * 1.3);
+    drawLine(ctx, tf, k, sel.lines[k], COL.epi, lw * 1.3);
+    // (out of the way of the point labelled on it in this picture, if any: see below)
+    const onIt = sel.kind === 'vertex' ? (sel.ok[k] ? sel.q[k].uv : null) : sel.k === k ? sel.uv : sel.vertex && sel.vertex.ok[k] ? sel.vertex.q[k].uv : null;
+    labelLine(ctx, tf, k, sel.lines[k], k ? 'l₂ = F x₁' : 'l₁ = Fᵀ x₂', COL.epi, lw, onIt);
     const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; ctx.beginPath(); ctx.arc(tf.ox + tf.s * uv[0], tf.oy + tf.s * uv[1], r, 0, 2 * Math.PI); ctx.stroke(); };
     if (sel.kind === 'vertex' && sel.ok[k]) ring(sel.q[k].uv, lw * 5, COL.selected);
     if (sel.kind === 'pixel') {
@@ -366,10 +406,10 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
       else if (P.showSamples) {
         // the points along the ray, as this camera sees them: all on the line
         ctx.fillStyle = COL.epi;
-        sel.samples.forEach((X, j) => {
+        sel.samples.forEach(X => {
           const q = project(X, k);
           if (!inFront(q, k)) return;
-          ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.uv[0], tf.oy + tf.s * q.uv[1], lw * (1.2 + 0.35 * j), 0, 2 * Math.PI); ctx.fill();
+          ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.uv[0], tf.oy + tf.s * q.uv[1], lw * 1.8, 0, 2 * Math.PI); ctx.fill();
         });
         // a picked vertex: its real match among them
         if (sel.vertex && sel.vertex.ok[k]) ring(sel.vertex.q[k].uv, lw * 5, COL.selected);
@@ -383,10 +423,17 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
         }
       }
     }
+    // the selected point's images: x₁, x₂ (only in its own picture for a plain pixel: in the other there is no one match)
+    const name = k ? 'x₂' : 'x₁';
+    if (sel.kind === 'vertex' && sel.ok[k]) pointLabel(ctx, tf, sel.q[k].uv, name, lw);
+    if (sel.kind === 'pixel') {
+      if (sel.k === k) pointLabel(ctx, tf, sel.uv, name, lw);
+      else if (sel.vertex && sel.vertex.ok[k]) pointLabel(ctx, tf, sel.vertex.q[k].uv, name, lw);
+    }
   }
   // the epipole
-  const e = geo.e[k], m = MARGIN * P.W, x0 = -m, y0 = -m, x1 = P.W + m, y1 = P.H + m;
-  const lbl = k ? 'e₂' : 'e₁', cxp = P.W / 2, cyp = P.H / 2;
+  const { W, H } = cams[k], e = geo.e[k], m = MARGIN * W, x0 = -m, y0 = -m, x1 = W + m, y1 = H + m;
+  const lbl = k ? 'e₂' : 'e₁', cxp = W / 2, cyp = H / 2;
   ctx.font = `${Math.round(lw * 7)}px system-ui, sans-serif`; ctx.fillStyle = COL.epipole; ctx.strokeStyle = COL.epipole; ctx.lineWidth = lw * 1.3;
   const finite = Math.abs(e[2]) > 1e-9 * Math.hypot(e[0], e[1]);
   const eu = finite ? e[0] / e[2] : NaN, ev = finite ? e[1] / e[2] : NaN;
@@ -409,7 +456,7 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
 }
 function drawPicture(k, sel) {
   const canvas = picCanvas[k], wrap = document.getElementById('side');
-  const W = P.W, H = P.H, m = MARGIN * W;
+  const { W, H } = cams[k], m = MARGIN * W;
   const phone = matchMedia('(max-width: 760px)').matches;
   // as wide as the panel (drag the divider to make them larger; the panel scrolls when they outgrow the window), on a
   // phone also short enough to leave room for the 3D view above
@@ -435,7 +482,7 @@ function drawPicture(k, sel) {
 // the picture on camera k's image plane in 3D: only the picture's own area
 const textures = [null, null];
 function drawTexture(k, sel) {
-  const Tw = 1024, Th = Math.max(16, Math.round(Tw * P.H / P.W)), c = texCanvas[k];
+  const { W, H } = cams[k], Tw = 1024, Th = Math.max(16, Math.round(Tw * H / W)), c = texCanvas[k];
   if (c.width !== Tw || c.height !== Th || !textures[k]) {
     c.width = Tw; c.height = Th;
     if (textures[k]) textures[k].dispose();
@@ -443,7 +490,7 @@ function drawTexture(k, sel) {
     textures[k].colorSpace = THREE.SRGBColorSpace; textures[k].anisotropy = 4;
     planeMats[k].map = textures[k]; planeMats[k].needsUpdate = true;
   }
-  const ctx = c.getContext('2d'), tf = { s: Tw / P.W, ox: 0, oy: 0 };
+  const ctx = c.getContext('2d'), tf = { s: Tw / W, ox: 0, oy: 0 };
   ctx.fillStyle = '#25282e'; ctx.fillRect(0, 0, Tw, Th);
   drawScene(ctx, tf, k, 2.4);
   drawEpipolar(ctx, tf, k, 2.4, sel);
@@ -480,8 +527,9 @@ const lineMat = (color, opacity = 1) => lineMats[color + opacity] ||= new THREE.
 const dashMat = color => lineMats['dash' + color] ||= new THREE.LineDashedMaterial({ color, dashSize: 0.15, gapSize: 0.1 });
 // onTop: a marker that must not get lost: drawn as usual, solid where nothing is in front of it, and again faintly
 // over everything (the see-through image planes included), so that behind something it shows dimmed, as behind
+// (drawn after the regular lines, in the transparent pass, so that a line through it at the same depth does not cover it)
 const pointMat = (color, size = 6, onTop = false) => pointMats[color + size + onTop] ||= Object.assign(
-  new THREE.PointsMaterial({ color, size, sizeAttenuation: false, map: dotTex, alphaTest: 0.5 }),
+  new THREE.PointsMaterial({ color, size, sizeAttenuation: false, map: dotTex, alphaTest: 0.5, transparent: onTop }),
   { userData: onTop ? { ghost: new THREE.PointsMaterial({ color, size, sizeAttenuation: false, map: dotTex, alphaTest: 0.5,
     transparent: true, opacity: 0.35, depthTest: false, depthWrite: false }) } : {} });
 const fillMat = (color, opacity) => fillMats[color + opacity] ||= new THREE.MeshBasicMaterial({
@@ -500,6 +548,7 @@ const points = (pts, mat) => {
   const g = new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(...p)));
   const o = new THREE.Points(g, mat);
   if (!mat.userData.ghost) return o;
+  o.renderOrder = 29;   // after the lines (on the image planes too, at 25), before the faint copy
   const ghost = new THREE.Points(g, mat.userData.ghost); ghost.renderOrder = 30;   // after the image planes
   const both = new THREE.Group(); both.add(o, ghost);
   return both;
@@ -552,7 +601,7 @@ camGroups.forEach((g, k) => {
 const eLabels = [label('e₁', COL.epipole), label('e₂', COL.epipole)];
 eLabels.forEach(l => world.add(l));
 
-const planeDist = () => P.planeScale * P.focal / 1000;   // metres: the image plane at f, the camera drawn enlarged
+const planeDist = k => P.planeScale * cams[k].focal / 1000;   // metres: camera k's image plane at f, the camera drawn enlarged
 function rebuild3D(sel) {
   for (const g of [dyn, ...camDyn]) { g.traverse(o => { if (o.geometry && !o.isSprite) o.geometry.dispose(); }); g.parent.remove(g); }
   dyn = new THREE.Group(); world.add(dyn);
@@ -577,10 +626,9 @@ function rebuild3D(sel) {
   }
 
   // each camera: its pose, its centre and its image plane at (enlarged) f, upright in front
-  const d = planeDist(), W = P.W, H = P.H;
   const ePts = [null, null];
   cams.forEach((cam, k) => {
-    const R = cam.R, C = cam.C;
+    const R = cam.R, C = cam.C, d = planeDist(k), { W, H } = cam;
     camGroups[k].matrix.set(R[0][0], R[1][0], R[2][0], C[0], R[0][1], R[1][1], R[2][1], C[1], R[0][2], R[1][2], R[2][2], C[2], 0, 0, 0, 1);
     camGroups[k].matrixWorldNeedsUpdate = true;
     const corners = [[0, 0], [W, 0], [W, H], [0, H]].map(p => Cam.pixelToNormalised(p, cam.K));
@@ -616,7 +664,7 @@ function rebuild3D(sel) {
     cams.forEach((cam, k) => {
       const e = geo.e[k], finite = Math.abs(e[2]) > 1e-9 * Math.hypot(e[0], e[1]);
       const eu = finite ? e[0] / e[2] : NaN, ev = finite ? e[1] / e[2] : NaN;
-      const reach = finite && !!ePts[k];
+      const reach = finite && !!ePts[k], d = planeDist(k), { W, H } = cam;
       // the picture with the margin drawn round it in the pictures, and out to the epipole
       const m = MARGIN * W;
       const x0 = reach ? Math.min(-m, eu) : -m, x1 = reach ? Math.max(W + m, eu) : W + m, y0 = reach ? Math.min(-m, ev) : -m, y1 = reach ? Math.max(H + m, ev) : H + m;
@@ -640,7 +688,7 @@ function rebuild3D(sel) {
   // the ray from camera k's centre to a scene point X; when X lies nearer than the (enlarged) image plane, on through X
   // to the plane, where its image is
   const rayTo = (k, X) => {
-    const C = cams[k].C, z = Cam.mulv(cams[k].R, Cam.sub(X, C))[2];
+    const C = cams[k].C, z = Cam.mulv(cams[k].R, Cam.sub(X, C))[2], d = planeDist(k);
     return [C, z > 0 && z < d ? Cam.add(C, Cam.scale(Cam.sub(X, C), d / z)) : X];
   };
 
@@ -655,7 +703,10 @@ function rebuild3D(sel) {
       X = Cam.add(sel.ray.C, Cam.scale(sel.ray.dir, Math.max(16, sel.depths[SAMPLES - 1] * 1.15, sel.probe.depth * 1.1)));
       dyn.add(segments([[sel.ray.C, X]], lineMat(COL.cams[sel.k])));
       // the probe (drag it along the ray), and the other camera's ray to it
-      dyn.add(points([sel.probe.X], pointMat(COL.probe, 13, true)));
+      // above every other marker too (it starts on the picked vertex, whose white dot would hide it)
+      const probeDot = points([sel.probe.X], pointMat(COL.probe, 13, true));
+      probeDot.children[0].renderOrder = 31; probeDot.children[1].renderOrder = 32;
+      dyn.add(probeDot);
       dyn.add(segments([rayTo(1 - sel.k, sel.probe.X)], lineMat(COL.probe)));
       if (P.showSamples) {
         dyn.add(points(sel.samples, pointMat(COL.epi, 8, true)));
@@ -699,8 +750,11 @@ function pickVertex(candidates, x, y, reach) {
 }
 // cam: the picture it was picked in (undefined: in the 3D view)
 const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', obj: hit.obj, i: hit.i, cam }; P.probe = null; update(); } };
-// the probe: dragged along its ray, to the point of the ray nearest the pointer's. Listening on the parent in the
-// capture phase runs before OrbitControls, so it can be switched off before it starts orbiting.
+// the probe: dragged along its ray, to where the other camera's ray towards the pointer meets it. That is where the
+// ray is cut by the plane through the viewer, the other camera's centre and the pointer's line of sight: on the screen,
+// where the line from the other centre through the pointer crosses the ray, so the probe follows the other camera's
+// rays wherever the pointer goes. Listening on the parent in the capture phase runs before OrbitControls, so it can be
+// switched off before it starts orbiting.
 {
   let dragging = false, pending = null;
   const raycaster = new THREE.Raycaster();
@@ -719,10 +773,12 @@ const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', o
     const rect = renderer.domElement.getBoundingClientRect();
     raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, 1 - (e.clientY - rect.top) / rect.height * 2), viewer);
     world.updateMatrixWorld();
-    const O = toWorld(sel.ray.C), a = toWorld(Cam.add(sel.ray.C, sel.ray.dir)).sub(O).normalize();
-    const r = raycaster.ray.direction, w = O.clone().sub(raycaster.ray.origin), b = a.dot(r), den = 1 - b * b;
-    if (den < 1e-4) return;   // looking along the ray
-    const t = (b * r.dot(w) - a.dot(w)) / den;
+    const A = toWorld(sel.ray.C), a = toWorld(Cam.add(sel.ray.C, sel.ray.dir)).sub(A).normalize();
+    const E = raycaster.ray.origin, r = raycaster.ray.direction, C2 = toWorld(cams[1 - sel.k].C);
+    const n = C2.clone().sub(E).cross(r), den = n.dot(a);
+    if (Math.abs(den) < 1e-9 * n.length()) return;   // the ray lies in that plane (seen end on, or through the other centre)
+    const t = n.dot(E.clone().sub(A)) / den;
+    if (!(t > 0)) return;   // the other camera's ray towards the pointer meets the picked ray behind its camera
     P.probe = Math.round(Math.max(PROBE_RANGE[0], Math.min(PROBE_RANGE[1], t)) * 100) / 100;
     update();
   }
@@ -872,9 +928,10 @@ function section(id, title, html) {
 }
 const unitNorm = M => { const n = Math.hypot(...M.flat()) || 1, s = M[2][2] < 0 ? -1 : 1; return M.map(r => r.map(x => s * x / n)); };
 const lineTxt = l => { const n = Math.hypot(l[0], l[1]) || 1; return `${fmt(l[0] / n, 3)} u + ${fmt(l[1] / n, 3)} v + ${fmt(l[2] / n, 4)} = 0`.replace(/\+ −/g, '− '); };
-function epipoleTxt(e) {
+function epipoleTxt(k) {
+  const e = geo.e[k];
   if (Math.abs(e[2]) > 1e-9 * Math.hypot(e[0], e[1])) {
-    const u = e[0] / e[2], v = e[1] / e[2], inside = u >= 0 && u <= P.W && v >= 0 && v <= P.H;
+    const u = e[0] / e[2], v = e[1] / e[2], inside = u >= 0 && u <= cams[k].W && v >= 0 && v <= cams[k].H;
     return `${vec([u, v], 1)} px${inside ? ' (inside the picture)' : ''}`;
   }
   const n = Math.hypot(e[0], e[1]);
@@ -889,8 +946,10 @@ function updateMath(sel) {
     <div class="eq"><i class="v">X</i>₂ = <i class="v">R</i> <i class="v">X</i>₁ + <i class="v">t</i>, &nbsp;
       <i class="v">R</i> = <i class="v">R</i>₂<i class="v">R</i>₁ᵀ = ${matrix(R, x => fx1(x, 3))} &nbsp;
       <i class="v">t</i> = <i class="v">t</i>₂ − <i class="v">R t</i>₁ = ${matrix(t.map(x => [x]), x => fx1(x, 3))}</div>
-    <div class="note num">Baseline |<i class="v">C</i>₂ − <i class="v">C</i>₁| = ${fmt(baseline, 3)} m. Both cameras: the same
-      <i class="v">K</i>, f<sub>x</sub> = f<sub>y</sub> = ${fx1(cams[0].K[0][0], 1)} px, principal point at the picture's centre.</div>
+    <div class="note num">Baseline |<i class="v">C</i>₂ − <i class="v">C</i>₁| = ${fmt(baseline, 3)} m.</div>
+    <div class="eq"><i class="v">K</i>₁ = ${matrix(cams[0].K, x => fx1(x, 1))} &nbsp; <i class="v">K</i>₂ = ${matrix(cams[1].K, x => fx1(x, 1))}</div>
+    <div class="note num">${cams.map((c, k) => `camera ${k + 1}: ${fmt(c.focal, 3)} mm on ${fmt(P.intr[k].sensorW, 3)} mm, ${c.W} × ${c.H} px`).join('; ')};
+      each with its principal point at its picture's centre.</div>
     ${baseline < 1e-6 ? '<div class="note warn">The two centres coincide: with no baseline there is no epipolar geometry (E = 0); a pure rotation maps one picture onto the other point for point.</div>' : ''}`);
   html += section('E', 'Essential matrix E = [t]× R', `
     <div class="eq"><i class="v">E</i> = ${matrix(E, x => fmt(x, 3))}</div>
@@ -902,8 +961,8 @@ function updateMath(sel) {
       line of x₁ in picture 2 is l₂ = <i class="v">F</i> x₁, of x₂ in picture 1 l₁ = <i class="v">F</i>ᵀ x₂. F has rank 2: all
       epipolar lines of a picture pass through its epipole.</div>
     <table class="steps">
-      <tr><td>epipole e₁ (the image of C₂ in camera 1; F e₁ = 0)</td><td>${epipoleTxt(geo.e[0])}</td></tr>
-      <tr><td>epipole e₂ (the image of C₁ in camera 2; Fᵀ e₂ = 0)</td><td>${epipoleTxt(geo.e[1])}</td></tr>
+      <tr><td>epipole e₁ (the image of C₂ in camera 1; F e₁ = 0)</td><td>${epipoleTxt(0)}</td></tr>
+      <tr><td>epipole e₂ (the image of C₁ in camera 2; Fᵀ e₂ = 0)</td><td>${epipoleTxt(1)}</td></tr>
     </table>`);
   if (sel && baseline > 1e-6) {
     const rows = [];
@@ -956,17 +1015,25 @@ function updateCaption() {
 // ----------------------------------------------------------------------------
 const gui = new GUI({ container: document.getElementById('gui'), title: 'Cameras' });
 const refresh = () => gui.controllersRecursive().forEach(c => c.updateDisplay());
-gui.add(P, 'preset', Object.keys(PRESETS)).name('preset').onChange(name => { P.cams = clone(PRESETS[name]); update(); });
-const fIn = gui.addFolder('Intrinsics (both cameras)');
-addMapped(fIn, P, 'focal', 8, 200, 0.1, LOG_MAP).name('focal length f (mm)').onChange(update);
-fIn.add(P, 'sensorW', SENSORS).name('sensor').onChange(update);
-fIn.add(P, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => {
-  const [w, h] = RESOLUTIONS[v], sx = w / P.W, sy = h / P.H;
-  if (P.selected.kind === 'pixel') P.selected.uv = [P.selected.uv[0] * sx, P.selected.uv[1] * sy];
-  P.W = w; P.H = h; update();
+gui.add(P, 'preset', Object.keys(PRESETS)).name('preset').onChange(name => {
+  P.cams = clone(PRESETS[name].cams); P.intr = presetIntr(name);
+  P.probe = null;
+  update();
 });
 const camFolders = [0, 1].map(k => {
-  const f = gui.addFolder(`Camera ${k + 1}`), c = () => P.cams[k];
+  const f = gui.addFolder(`Camera ${k + 1}`), c = () => P.cams[k], intr = () => P.intr[k];
+  // its intrinsics
+  const ip = {};
+  for (const key of ['focal', 'sensorW', 'resolution']) Object.defineProperty(ip, key, { get: () => intr()[key], set: v => { intr()[key] = v; } });
+  addMapped(f, ip, 'focal', 8, 200, 0.1, LOG_MAP).name('focal length f (mm)').onChange(update);
+  f.add(ip, 'sensorW', SENSORS).name('sensor').onChange(update);
+  f.add(ip, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => {
+    // the same lens and sensor sampled more or less finely: a pixel picked in this picture keeps its place
+    const [w, h] = RESOLUTIONS[v], i = intr();
+    if (P.selected.kind === 'pixel' && P.selected.cam === k) P.selected.uv = [P.selected.uv[0] * w / i.W, P.selected.uv[1] * h / i.H];
+    i.W = w; i.H = h; update();
+  });
+  // and its pose
   const proxy = {};
   for (const key of ['x', 'y', 'z', 'yaw', 'pitch', 'roll']) Object.defineProperty(proxy, key, { get: () => c()[key], set: v => { c()[key] = v; } });
   f.add(proxy, 'x', -10, 10, 0.05).name('X (m)').onChange(update);
