@@ -13,7 +13,7 @@
   #app { --side: 44%; display: grid; grid-template-columns: minmax(0, 1fr) 7px minmax(300px, var(--side)); height: 100%; }
   #splitter { cursor: col-resize; touch-action: none; background: #26292e; border-left: 1px solid #33363c; border-right: 1px solid #33363c; }
   #splitter:hover, #splitter.active { background: #3a3f47; }
-  #world { position: relative; min-width: 0; overflow: hidden; }
+  #world { position: relative; min-width: 0; overflow: hidden; container-type: inline-size; }
   #world > canvas { display: block; touch-action: none; }
   #help3d { position: absolute; left: 10px; right: 290px; top: 8px; color: #9aa0a8; font-size: 12px; pointer-events: none; }
   #help3d a { color: #9ad8ff; pointer-events: auto; }
@@ -54,6 +54,8 @@
     #help3d .hint { display: none; }
   }
   @media (pointer: coarse) { #help3d .hint { display: none; } }
+  /* the 3D view narrowed (the window, or the split dragged): too little room beside the menu for the hint */
+  @container (max-width: 600px) { #help3d .hint { display: none; } }
 </style>
 <script type="importmap">
 { "imports": {
