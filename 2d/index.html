@@ -620,10 +620,14 @@ function zoomAt(q, factor) {
   view.ox = q.x + (view.ox - q.x) * r; view.oy = q.y + (view.oy - q.y) * r; view.k = k2;
   update();
 }
+// A wheel delta in notches, whatever the page's zoom: browsers report a mouse wheel's notch in CSS pixels, some 100 at
+// 100 % but more with the page zoomed out and fewer zoomed in (Firefox often in lines), so a large delta is one notch, by
+// its sign; small ones, a touchpad's, count in proportion (100 px a notch).
+const wheelNotches = (d, mode) => { const px = d * (mode === 1 ? 33 : mode === 2 ? 400 : 1); return Math.abs(px) >= 15 ? Math.sign(px) : px / 100; };
 let wheelAcc = 0;
 svg.addEventListener('wheel', e => {
   e.preventDefault();
-  wheelAcc += e.deltaY / (e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1);
+  wheelAcc += wheelNotches(e.deltaY, e.deltaMode);
   const n = Math.trunc(wheelAcc); if (!n) return; wheelAcc -= n;
   const notches = clamp(n, -3, 3) * (e.ctrlKey ? 3 : 1);
   zoomAt(clientToSvg(e), Math.pow(1 / 1.1, notches));
@@ -743,7 +747,7 @@ function installWheel(ctrl) {
     if (!onSlider && !onInput) return;
     if (onSlider && Math.abs(e.deltaX) < Math.abs(e.deltaY) && ctrl._hasScrollBar) return;
     e.preventDefault(); e.stopImmediatePropagation();
-    acc += e.deltaY / (e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1);
+    acc += wheelNotches(e.deltaY, e.deltaMode);
     const n = Math.trunc(acc);
     if (!n) return;
     acc -= n;

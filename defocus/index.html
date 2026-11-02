@@ -125,6 +125,10 @@ const symPowMap = p => ({
 // hundred steps; instead a notch moves it a fixed share of the track (in the mapped track for mapped sliders). The
 // track position is kept unrounded between events, so small trackpad deltas still add up past the step rounding.
 const WHEEL_NOTCH = 0.02;
+// A wheel delta in notches, whatever the page's zoom: browsers report a mouse wheel's notch in CSS pixels, some 100 at
+// 100 % but more with the page zoomed out and fewer zoomed in (Firefox often in lines), so a large delta is one notch, by
+// its sign; small ones, a touchpad's, count in proportion (100 px a notch).
+const wheelNotches = (d, mode) => { const px = d * (mode === 1 ? 33 : mode === 2 ? 400 : 1); return Math.abs(px) >= 15 ? Math.sign(px) : px / 100; };
 const LINEAR_MAP = { fromFrac: (t, lo, hi) => lo + t * (hi - lo), toFrac: (v, lo, hi) => (v - lo) / (hi - lo) };
 function tameWheel(c) {
   const map = c._map || LINEAR_MAP;
@@ -135,8 +139,7 @@ function tameWheel(c) {
     if (onSlider && Math.abs(e.deltaX) < Math.abs(e.deltaY) && c._hasScrollBar) return;   // let the panel scroll
     e.preventDefault(); e.stopPropagation();
     if (c.getValue() !== last) frac = map.toFrac(c.getValue(), c._min, c._max);
-    const px = (e.deltaX - e.deltaY) * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
-    frac = Math.max(0, Math.min(1, frac + px / 100 * WHEEL_NOTCH));
+    frac = Math.max(0, Math.min(1, frac + wheelNotches(e.deltaX - e.deltaY, e.deltaMode) * WHEEL_NOTCH));
     c._snapClampSetValue(map.fromFrac(frac, c._min, c._max));
     last = c.getValue();
   }, { capture: true, passive: false });
@@ -540,6 +543,19 @@ const controls = new OrbitControls(viewer, renderer.domElement);
 controls.target.copy(toThree(VIEW_TARGET));
 controls.enableDamping = false;
 controls.addEventListener('change', () => requestRender());
+// Wheel zoom taken over from OrbitControls, whose step divides by the device pixel ratio cut to a whole number: 0
+// with the page zoomed out below 100 % (the view collapses onto its target), and too slow zoomed in. Here 10 % a
+// notch, counted the same at any page zoom; a touchpad pinch (Ctrl + wheel, small deltas) three times as fast. (The
+// capture phase on the parent runs first; touch pinch stays with OrbitControls.)
+worldEl.addEventListener('wheel', e => {
+  if (e.target !== renderer.domElement || !controls.enabled) return;
+  e.preventDefault(); e.stopPropagation();
+  const n = Math.max(-3, Math.min(3, wheelNotches(e.deltaY, e.deltaMode) * (e.ctrlKey ? 3 : 1)));
+  const offset = viewer.position.clone().sub(controls.target);
+  const dist = Math.max(controls.minDistance, Math.min(controls.maxDistance, offset.length() * Math.pow(1.1, n)));
+  viewer.position.copy(controls.target).addScaledVector(offset.normalize(), dist);
+  controls.update();
+}, { capture: true, passive: false });
 
 // round points for vertices
 const dotTex = (() => {
