@@ -213,7 +213,7 @@ const DEFAULTS = {
   selected: { kind: 'vertex', obj: 'cube', i: 7, cam: 0 },
   probe: null,   // metres along a picked pixel's ray: the point dragged along it (null: on the last but one marked)
   match: null,   // [u, v]: a candidate match of a picked pixel in the other picture, dragged there freely (null: none)
-  planeScale: 25, showPlane: true, showPencil: false, showSamples: true,
+  planeScale: 20, showPlane: true, showPencil: false, showSamples: true,
   undistortPics: false,   // the pictures with their lens distortion removed (else as taken)
 };
 const STORE = 'epipolar.state';
@@ -1309,11 +1309,23 @@ function updateCaption() {
 // ----------------------------------------------------------------------------
 const gui = new GUI({ container: document.getElementById('gui'), title: 'Cameras' });
 const refresh = () => gui.controllersRecursive().forEach(c => c.updateDisplay());
-gui.add(P, 'preset', Object.keys(PRESETS)).name('preset').onChange(name => {
+const presetCtrl = gui.add(P, 'preset', Object.keys(PRESETS)).name('preset').onChange(name => {
   P.cams = clone(PRESETS[name].cams); P.intr = presetIntr(name);
   P.probe = null; P.match = null;
   update();
 });
+// The preset changed since chosen (the cameras' poses or intrinsics, what a preset sets): its name with a star, an
+// extra entry at the end of the list (lil-gui reads the others by their index); choosing the plain name restores it.
+const sameAs = (a, b) => Object.keys(b).every(key => a[key] === b[key]);
+const presetModified = () => !!PRESETS[P.preset] && (P.cams.some((c, k) => !sameAs(c, PRESETS[P.preset].cams[k])) || P.intr.some((c, k) => !sameAs(c, presetIntr(P.preset)[k])));
+function markPreset() {
+  const sel = presetCtrl.$select;
+  let star = sel.querySelector('option.modified');
+  if (!presetModified()) { if (star) star.remove(); return; }
+  if (!star) { star = document.createElement('option'); star.className = 'modified'; sel.appendChild(star); }
+  star.textContent = P.preset + ' *'; star.selected = true;
+  presetCtrl.$display.textContent = star.textContent;
+}
 const camFolders = [0, 1].map(k => {
   const f = gui.addFolder(`Camera ${k + 1}`), c = () => P.cams[k], intr = () => P.intr[k];
   // its intrinsics
@@ -1378,6 +1390,7 @@ function update() {
   updateMath(sel);
   updateCaption();
   refresh();
+  markPreset();   // (after refresh: it would show the plain name)
   saveState();
   requestRender();
 }
