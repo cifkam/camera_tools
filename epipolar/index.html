@@ -701,7 +701,7 @@ const polyline = (pts, mat) => {
   if (mat.isLineDashedMaterial) l.computeLineDistances();
   return l;
 };
-// order: of an onTop marker, before the image planes (PLANE_ORDER) unless it lies on one
+// order: of an onTop marker, before the image planes (PLANE_ORDER) unless it lies on one (ON_PLANE_ORDER)
 const points = (pts, mat, order = 10) => {
   const o = new THREE.Points(new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(...p))), mat);
   if (mat.transparent) o.renderOrder = order;
@@ -725,8 +725,8 @@ function label(text, color, size = 0.032) {
   const c = document.createElement('canvas'); c.width = 128; c.height = 64;
   const g = c.getContext('2d'); g.font = 'bold 40px system-ui, sans-serif'; g.fillStyle = color;
   g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 64, 34);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
-  sp.scale.set(size * 2, size, 1); sp.renderOrder = 20;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false, depthTest: false }));
+  sp.scale.set(size * 2, size, 1); sp.renderOrder = 30;   // last: over the lines too
   return sp;
 }
 
@@ -735,10 +735,13 @@ let dyn = new THREE.Group(); world.add(dyn);
 const camGroups = [0, 1].map(() => { const g = new THREE.Group(); g.matrixAutoUpdate = false; world.add(g); return g; });
 let camDyn = [new THREE.Group(), new THREE.Group()];
 camDyn.forEach((g, k) => camGroups[k].add(g));
-// the image planes record no depth: the epipolar lines lying in them, drawn after them (onPlane below), would otherwise
-// be lost to them wherever rounding puts the plane a hair in front
-const PLANE_ORDER = 15;
-const planeMats = [0, 1].map(() => new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthWrite: false }));
+// the image planes record their depth, so that what is drawn after them and lies behind one (the other camera's
+// epipole and epipolar lines) is covered by it, pixel by pixel; but pushed back a little (polygon offset), so that what
+// lies in a plane (its own epipole and epipolar lines) is not lost to it wherever rounding puts the plane a hair in front.
+// (The labels skip the depth test: always readable.)
+const PLANE_ORDER = 15, ON_PLANE_ORDER = 25;
+const planeMats = [0, 1].map(() => new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.9,
+  polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }));
 // the epipolar lines on them: wider than WebGL's 1 px lines (linewidth in pixels; resolution kept up by resize3D)
 const onPlaneMats = {};
 const onPlaneMat = (color, opacity = 1) => onPlaneMats[color + opacity] ||= new LineMaterial({ color, transparent: true, opacity,
@@ -762,8 +765,8 @@ eLabels.forEach(l => world.add(l));
 const baseLabel = (() => {
   const c = document.createElement('canvas'); c.width = 320; c.height = 64;
   const tex = new THREE.CanvasTexture(c);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, sizeAttenuation: false, depthWrite: false }));
-  sp.scale.set(0.02 * 5, 0.02, 1); sp.renderOrder = 20;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, sizeAttenuation: false, depthWrite: false, depthTest: false }));
+  sp.scale.set(0.02 * 5, 0.02, 1); sp.renderOrder = 30;   // last: over the lines too
   let shown = null;
   sp.userData.setText = text => {
     if (text === shown) return;
@@ -830,13 +833,18 @@ function rebuild3D(sel) {
     const lo = Math.min(...ts), hi = Math.max(...ts);
     dyn.add(polyline([Cam.add(cams[0].C, Cam.scale(dir, lo)), Cam.add(cams[0].C, Cam.scale(dir, hi))], dashMat(COL.baseline)));
     const ep = ePts.filter(Boolean);
-    if (ep.length) dyn.add(points(ep, pointMat(COL.epipole, 9, true), 29));   // on the image planes: after them
+    if (ep.length) dyn.add(points(ep, pointMat(COL.epipole, 9, true), ON_PLANE_ORDER));   // on the image planes: after them
   }
   ePts.forEach((p, k) => { eLabels[k].visible = !!p; if (p) eLabels[k].position.set(p[0], p[1], p[2] + 0.18); });
   baseLabel.visible = geo.baseline > 1e-6;
   if (baseLabel.visible) {
-    const mid = Cam.scale(Cam.add(cams[0].C, cams[1].C), 0.5);
-    baseLabel.position.set(mid[0], mid[1], mid[2] - 0.22);   // below the line: the epipoles, often on it, are labelled above
+    // below the line (the epipoles, often on it, are labelled above), and along it out of their way: its middle, or
+    // the place between the centres farthest from them
+    const at = t => Cam.add(cams[0].C, Cam.scale(Cam.sub(cams[1].C, cams[0].C), t));
+    const room = t => Math.min(Infinity, ...ePts.filter(Boolean).map(p => Cam.norm(Cam.sub(p, at(t)))));
+    const ts = [0.5, 0.35, 0.65, 0.2, 0.8], t = ts.find(t => room(t) > 0.2 * geo.baseline) ?? ts.reduce((a, c) => room(c) > room(a) ? c : a);
+    const mid = at(t);
+    baseLabel.position.set(mid[0], mid[1], mid[2] - 0.22);
     baseLabel.userData.setText(`baseline ${geo.baseline.toFixed(2)} m`);
   }
 
@@ -855,7 +863,7 @@ function rebuild3D(sel) {
       const draw = (l, mat) => {
         const seg = l && Epi.clipLine(l, x0, y0, x1, y1);
         if (!seg) return;
-        const line = fatSegments([seg.map(onPlane)], mat); line.renderOrder = 25;   // after the image planes
+        const line = fatSegments([seg.map(onPlane)], mat); line.renderOrder = ON_PLANE_ORDER;   // after the image planes
         camDyn[k].add(line);
       };
       if (P.showPencil) PENCIL_PTS().forEach((p, i) => draw(k === 0 ? Epi.cross(geo.e[0], [p[0], p[1], 1]) : Epi.lineInImage2(geo.F, p), onPlaneMat(PENCIL[i], 0.6)));
