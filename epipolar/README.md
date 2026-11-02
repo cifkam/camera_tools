@@ -30,16 +30,22 @@ web server (three.js comes from a CDN).
   horizontal, the epipoles at infinity); forward motion (the epipole is the focus of expansion); and a wide + tele
   pair (24 mm close by, 70 mm from afar: different K₁ and K₂); and a pure rotation (one centre, the camera only turned:
   no baseline, so E = F = 0 and there are no epipolar lines; a picked pixel's whole ray lands on one pixel of the other
-  picture, x₂ = H x₁ with the homography H = K₂ R K₁⁻¹). Each preset sets both cameras' poses and intrinsics;
+  picture, x₂ = H x₁ with the homography H = K₂ R K₁⁻¹).
+- **Lens distortion**: each camera's folder has a radial distortion k₁ (OpenCV's model; negative barrel, positive
+  pincushion). E and F hold for the pinhole's pixels, the pictures undistorted. Shown as taken, the pictures bend
+  straight edges and the epipolar line with them: the true one is a curve, the points along a ray all on it, while F
+  applied to the pixels as taken gives a straight line (dashed) that misses them. A View option shows the pictures
+  undistorted, where the lines are straight again. The image planes in the 3D view are the pinhole's, undistorted. Each preset sets both cameras' poses and intrinsics;
   each camera's focal length, sensor and resolution can also be set in its folder.
 
 ## Model
 
 Camera.js's conventions: world Z up, OpenCV camera frame (x right, y down, z forward), X_c = R X_w + t, t = −R C, x
-= K X_c / Z_c, each camera with its own K (focal length, sensor and resolution, set in its folder). Camera 2
+= K X_c / Z_c, each camera with its own K (focal length, sensor and resolution, set in its folder); a lens's
+distortion only changes how the pictures are shown, the selection and all the maths are in undistorted pixels. Camera 2
 relative to camera 1: X₂ = R X₁ + t with R = R₂R₁ᵀ and t = t₂ − R t₁; E = [t]× R, F = K₂⁻ᵀ E K₁⁻¹; l₂ = F x₁, l₁ =
-Fᵀ x₂; e₁ is the image of C₂ in camera 1 (F e₁ = 0), e₂ that of C₁ in camera 2 (Fᵀ e₂ = 0). No lens distortion:
-epipolar lines are straight only without it.
+Fᵀ x₂; e₁ is the image of C₂ in camera 1 (F e₁ = 0), e₂ that of C₁ in camera 2 (Fᵀ e₂ = 0). Epipolar lines are
+straight only without lens distortion, or once the pictures are undistorted.
 
 ## Files
 

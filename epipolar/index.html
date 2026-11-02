@@ -188,7 +188,7 @@ const aimed = (C, target = SCENE_CENTRE) => { const a = Cam.lookAt(C, target); r
 // the epipolar lines come out horizontal and the epipoles at infinity), and a camera moving straight ahead (the
 // epipole is then the focus of expansion, the lines radiate from it)
 // Each sets both cameras: their poses (cams) and their intrinsics (intr, the same 24 mm, 1280 × 720 unless given).
-const INTR = (focal = 24) => ({ focal, sensorW: 36, resolution: '1280×720', W: 1280, H: 720 });
+const INTR = (focal = 24) => ({ focal, sensorW: 36, resolution: '1280×720', W: 1280, H: 720, k1: 0 });
 const PRESETS = {
   // (camera 2 at the height that puts the cube's front top edge, as camera 1 sees it, in an epipolar plane: both its
   // corners lie on one epipolar line in each picture)
@@ -214,6 +214,7 @@ const DEFAULTS = {
   probe: null,   // metres along a picked pixel's ray: the point dragged along it (null: on the last but one marked)
   match: null,   // [u, v]: a candidate match of a picked pixel in the other picture, dragged there freely (null: none)
   planeScale: 25, showPlane: true, showPencil: false, showSamples: true,
+  undistortPics: false,   // the pictures with their lens distortion removed (else as taken)
 };
 const STORE = 'epipolar.state';
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -245,7 +246,11 @@ function buildCameras() {
     const { focal, sensorW, W, H } = P.intr[k], fx = Cam.fxFromFocal(focal, sensorW, W);
     const K = Cam.intrinsics({ fx, fy: fx, cx: W / 2, cy: H / 2 });
     const R = Cam.rotationFromYawPitchRoll(c.yaw, c.pitch, c.roll), C = [c.x, c.y, c.z];
-    return { ...Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C) }), C, W, H, focal };
+    // the model is a pinhole (all the epipolar maths, in undistorted pixels); lens: the same camera with its lens's
+    // radial distortion k₁, which the pictures show when not undistorted
+    const pin = Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C) });
+    const k1 = P.intr[k].k1 || 0, lens = k1 ? Cam.makeCamera({ K, R, t: pin.t, dist: { ...Cam.NO_DISTORTION, k1 }, view: [W, H] }) : null;
+    return { ...pin, C, W, H, focal, lens };
   });
   const f = Epi.fundamental(cams[0], cams[1]);
   const baseline = Cam.norm(Cam.sub(cams[1].C, cams[0].C));
@@ -352,6 +357,39 @@ const texCanvas = [document.createElement('canvas'), document.createElement('can
 const picTf = [null, null];
 const MARGIN = 0.12;   // drawn margin around each picture, as a fraction of its width
 const PENCIL = Array.from({ length: 8 }, (_, i) => `hsl(${i * 45}, 75%, 62%)`);
+// A model pixel (undistorted: where the pinhole puts it) on the canvas: through camera tf.k's lens when the picture
+// shows it (tf.lens), and back. Beyond the lens model's reach (strong barrel) null: nothing is drawn there.
+const lensPx = (cam, uv) => {
+  const n = Cam.pixelToNormalised(uv, cam.K);
+  return Math.hypot(...n) > cam.lens.rMax ? null : Cam.normalisedToPixel(Cam.distort(n, cam.lens.dist), cam.K);
+};
+const toCanvas = (tf, uv) => {
+  const p = tf.lens ? lensPx(cams[tf.k], uv) : uv;
+  return p && [tf.ox + tf.s * p[0], tf.oy + tf.s * p[1]];
+};
+function fromCanvas(tf, X, Y) {
+  const uv = [(X - tf.ox) / tf.s, (Y - tf.oy) / tf.s];
+  if (!tf.lens) return uv;
+  const K = cams[tf.k].K, n = Cam.undistort(Cam.pixelToNormalised(uv, K), cams[tf.k].lens.dist);
+  return isFinite(n[0]) ? Cam.normalisedToPixel(n, K) : uv;
+}
+// a polyline of model pixels on the canvas: densely through the lens, broken where it leaves the lens model's reach
+function strokeModel(ctx, tf, pts) {
+  const dense = !tf.lens ? pts : pts.flatMap((p, j) => j ? Array.from({ length: 48 }, (_, i) => {
+    const t = (i + 1) / 48, a = pts[j - 1]; return [a[0] + (p[0] - a[0]) * t, a[1] + (p[1] - a[1]) * t];
+  }) : [p]);
+  ctx.beginPath();
+  let pen = false;
+  for (const p of dense) {
+    const c = toCanvas(tf, p);
+    if (!c) { pen = false; continue; }
+    if (pen) ctx.lineTo(c[0], c[1]); else ctx.moveTo(c[0], c[1]);
+    pen = true;
+  }
+  ctx.stroke();
+}
+const fillDot = (ctx, tf, uv, r) => { const c = toCanvas(tf, uv); if (c) { ctx.beginPath(); ctx.arc(c[0], c[1], r, 0, 2 * Math.PI); ctx.fill(); } };
+const circle = (ctx, tf, uv, r) => { const c = toCanvas(tf, uv); if (c) { ctx.beginPath(); ctx.arc(c[0], c[1], r, 0, 2 * Math.PI); ctx.stroke(); } };
 function strokeLines(ctx, tf, lines) {
   ctx.beginPath();
   for (const l of lines) {
@@ -366,12 +404,14 @@ function drawLine(ctx, tf, k, l, color, width, dash = []) {
   const { W, H } = cams[k], m = MARGIN * W, seg = Epi.clipLine(l, -m, -m, W + m, H + m);
   if (!seg) return;
   ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
-  ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * seg[0][0], tf.oy + tf.s * seg[0][1]); ctx.lineTo(tf.ox + tf.s * seg[1][0], tf.oy + tf.s * seg[1][1]); ctx.stroke();
+  strokeModel(ctx, tf, seg);   // through the lens: a curve
   ctx.setLineDash([]);
 }
 // a point's name, above and to the left of its ring
 function pointLabel(ctx, tf, [u, v], text, lw) {
-  const X = tf.ox + tf.s * u - lw * 5, Y = tf.oy + tf.s * v - lw * 5;
+  const c = toCanvas(tf, [u, v]);
+  if (!c) return;
+  const X = c[0] - lw * 5, Y = c[1] - lw * 5;
   ctx.font = `600 ${Math.round(lw * 12)}px system-ui, sans-serif`; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
   ctx.lineWidth = lw * 2.5; ctx.strokeStyle = 'rgba(22, 24, 27, 0.85)'; ctx.strokeText(text, X, Y);   // a dark halo
   ctx.fillStyle = COL.selected; ctx.fillText(text, X, Y);
@@ -383,24 +423,27 @@ function labelLine(ctx, tf, k, l, text, color, lw, avoid = []) {
   if (!seg) return;
   const [a, b] = seg[0][0] <= seg[1][0] ? seg : [seg[1], seg[0]];
   const right = !avoid.some(p => Math.hypot(p[0] - b[0], p[1] - b[1]) < 0.3 * cams[k].W);
-  const t = right ? 0.97 : 0.03, u = a[0] + (b[0] - a[0]) * t, v = a[1] + (b[1] - a[1]) * t;
+  const t = right ? 0.97 : 0.03, at = t => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const c = toCanvas(tf, at(t)), c2 = toCanvas(tf, at(t + 0.01));
+  if (!c || !c2) return;
   ctx.save();
-  ctx.translate(tf.ox + tf.s * u, tf.oy + tf.s * v);
-  ctx.rotate(Math.atan2(b[1] - a[1], b[0] - a[0]));
+  ctx.translate(c[0], c[1]);
+  ctx.rotate(Math.atan2(c2[1] - c[1], c2[0] - c[0]));   // along it here (through the lens it curves)
   ctx.font = `600 ${Math.round(lw * 12)}px system-ui, sans-serif`; ctx.textAlign = right ? 'right' : 'left'; ctx.textBaseline = 'bottom';
   ctx.lineWidth = lw * 2.5; ctx.strokeStyle = 'rgba(22, 24, 27, 0.85)'; ctx.strokeText(text, 0, -lw * 2);   // a dark halo
   ctx.fillStyle = color; ctx.fillText(text, 0, -lw * 2);
   ctx.restore();
 }
-// the scene as camera k sees it
+// the scene as camera k sees it (through its lens when the picture shows that: straight edges curve)
 function drawScene(ctx, tf, k, lw) {
   ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const cam = tf.lens ? cams[k].lens : cams[k];
   const order = ['grid', 'board', 'axes', 'cylinder', 'pyramid', 'cube'];
   for (const key of order) {
     if (!P.show[key]) continue;
     const s = SHAPES[key], verts = placed(key);
     for (const [ids, shade] of s.geom.faces || []) {
-      const poly = Cam.projectPolygon(ids.map(i => verts[i]), cams[k]);
+      const poly = Cam.projectPolygon(ids.map(i => verts[i]), cam);
       if (!poly) continue;
       ctx.fillStyle = shade ? 'rgba(233,233,233,.85)' : 'rgba(20,21,24,.85)';
       ctx.beginPath(); poly.forEach(([u, v], j) => (j ? ctx.lineTo : ctx.moveTo).call(ctx, tf.ox + tf.s * u, tf.oy + tf.s * v));
@@ -409,7 +452,7 @@ function drawScene(ctx, tf, k, lw) {
     ctx.lineWidth = key === 'grid' ? lw * 0.7 : key === 'axes' ? lw * 1.8 : lw;
     s.geom.edges.forEach(([a, b], n) => {
       ctx.strokeStyle = s.edgeColors ? s.edgeColors[n] : s.color;
-      strokeLines(ctx, tf, Cam.projectSegment(verts[a], verts[b], cams[k], false));
+      strokeLines(ctx, tf, Cam.projectSegment(verts[a], verts[b], cam));
     });
     if (s.noVertices) continue;
     ctx.fillStyle = s.color || '#dddddd';
@@ -417,7 +460,7 @@ function drawScene(ctx, tf, k, lw) {
       if (key === 'axes' && i) return;
       const q = project(X, k);
       if (!inFront(q, k)) return;
-      ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.uv[0], tf.oy + tf.s * q.uv[1], lw * 1.3, 0, 2 * Math.PI); ctx.fill();
+      fillDot(ctx, tf, q.uv, lw * 1.3);
     });
   }
 }
@@ -430,6 +473,16 @@ const PENCIL_PTS = () => Array.from({ length: 8 }, (_, i) => {
   const { W, H } = cams[0], a = -Math.PI / 2 + Math.PI * (i + 0.5) / 8, r = 0.42 * H;
   return [W / 2 + r * Math.cos(a), H / 2 + r * Math.sin(a)];
 });
+// a model pixel of camera k as its picture shows it, through its lens (the same where it has none)
+const asTaken = (k, uv) => cams[k].lens ? lensPx(cams[k], uv) : uv;
+// In picture k shown as taken, with a lens distortion in either camera: the line F gives from the other picture's point
+// read off as taken, in the pixels as taken (null where it does not differ)
+function naiveLine(sel, k) {
+  if (P.undistortPics || !(cams[0].lens || cams[1].lens) || !sel.lines[k]) return null;
+  const o = 1 - k, src = sel.kind === 'vertex' ? sel.q[o].uv : sel.k === o ? sel.uv : null;
+  const raw = src && asTaken(o, src);
+  return raw && lineIn(k, raw);
+}
 function drawEpipolar(ctx, tf, k, lw, sel) {
   if (noBaseline()) { drawRotation(ctx, tf, k, lw, sel); return; }
   if (P.showPencil) {
@@ -440,22 +493,31 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
     });
   }
   if (sel) {
+    // pictures as taken through a lens with distortion: F applied to the pixels as they are (not undistorted) gives a
+    // straight line, dashed, that misses the match, which lies on the true line's image, a curve
+    const naive = !tf.pinhole && naiveLine(sel, k);
+    if (naive) {
+      ctx.strokeStyle = COL.epi; ctx.globalAlpha = 0.75; ctx.lineWidth = lw * 0.9; ctx.setLineDash([lw * 4, lw * 3]);
+      const { W, H } = cams[k], mg = MARGIN * W, seg = Epi.clipLine(naive, -mg, -mg, W + mg, H + mg);
+      if (seg) { ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * seg[0][0], tf.oy + tf.s * seg[0][1]); ctx.lineTo(tf.ox + tf.s * seg[1][0], tf.oy + tf.s * seg[1][1]); ctx.stroke(); }
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
     drawLine(ctx, tf, k, sel.lines[k], COL.epi, lw * 1.3);
     // (out of the way of the point labelled on it in this picture, if any: see below)
     const onIt = sel.kind === 'vertex' ? [sel.ok[k] && sel.q[k].uv] : sel.k === k ? [sel.uv]
       : [sel.vertex && sel.vertex.ok[k] && sel.vertex.q[k].uv, sel.match ? sel.match.uv : project(sel.probe.X, k).uv];
     labelLine(ctx, tf, k, sel.lines[k], k ? 'l₂ = F x₁' : 'l₁ = Fᵀ x₂', COL.epi, lw, onIt.filter(Boolean));
-    const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; ctx.beginPath(); ctx.arc(tf.ox + tf.s * uv[0], tf.oy + tf.s * uv[1], r, 0, 2 * Math.PI); ctx.stroke(); };
+    const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; circle(ctx, tf, uv, r); };
     if (sel.kind === 'vertex' && sel.ok[k]) ring(sel.q[k].uv, lw * 5, COL.selected);
     if (sel.kind === 'pixel') {
-      if (sel.k === k) { ring(sel.uv, lw * 5, COL.selected); ctx.fillStyle = COL.selected; ctx.beginPath(); ctx.arc(tf.ox + tf.s * sel.uv[0], tf.oy + tf.s * sel.uv[1], lw * 1.4, 0, 2 * Math.PI); ctx.fill(); }
+      if (sel.k === k) { ring(sel.uv, lw * 5, COL.selected); ctx.fillStyle = COL.selected; fillDot(ctx, tf, sel.uv, lw * 1.4); }
       else if (P.showSamples) {
         // the points along the ray, as this camera sees them: all on the line
         ctx.fillStyle = COL.epi;
         sel.samples.forEach(X => {
           const q = project(X, k);
           if (!inFront(q, k)) return;
-          ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.uv[0], tf.oy + tf.s * q.uv[1], lw * 1.8, 0, 2 * Math.PI); ctx.fill();
+          fillDot(ctx, tf, q.uv, lw * 1.8);
         });
         // a picked vertex: its real match among them
         if (sel.vertex && sel.vertex.ok[k]) ring(sel.vertex.q[k].uv, lw * 5, COL.selected);
@@ -466,11 +528,11 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
         if (m && Math.abs(m.dist) * tf.s > lw) {
           const foot = m.foot;
           ctx.strokeStyle = COL.gap; ctx.lineWidth = lw; ctx.setLineDash([lw * 3, lw * 2]);
-          ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * foot[0], tf.oy + tf.s * foot[1]); ctx.lineTo(tf.ox + tf.s * m.uv[0], tf.oy + tf.s * m.uv[1]); ctx.stroke();
+          strokeModel(ctx, tf, [foot, m.uv]);
           ctx.setLineDash([]);
         }
         if (at) {
-          ctx.fillStyle = COL.probe; ctx.beginPath(); ctx.arc(tf.ox + tf.s * at[0], tf.oy + tf.s * at[1], lw * 2.6, 0, 2 * Math.PI); ctx.fill();
+          ctx.fillStyle = COL.probe; fillDot(ctx, tf, at, lw * 2.6);
           ring(at, lw * 5.5, COL.probe);
         }
       } else if (sel.match && Math.abs(sel.match.dist) > 0.05) {
@@ -499,8 +561,9 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
   ctx.font = `${Math.round(lw * 7)}px system-ui, sans-serif`; ctx.fillStyle = COL.epipole; ctx.strokeStyle = COL.epipole; ctx.lineWidth = lw * 1.3;
   const finite = Math.abs(e[2]) > 1e-9 * Math.hypot(e[0], e[1]);
   const eu = finite ? e[0] / e[2] : NaN, ev = finite ? e[1] / e[2] : NaN;
-  if (finite && eu >= x0 && eu <= x1 && ev >= y0 && ev <= y1) {
-    const X = tf.ox + tf.s * eu, Y = tf.oy + tf.s * ev;
+  const ec = finite && eu >= x0 && eu <= x1 && ev >= y0 && ev <= y1 ? toCanvas(tf, [eu, ev]) : null;
+  if (ec) {
+    const [X, Y] = ec;
     ctx.beginPath(); ctx.arc(X, Y, lw * 4, 0, 2 * Math.PI); ctx.stroke();
     ctx.beginPath(); ctx.arc(X, Y, lw * 1.2, 0, 2 * Math.PI); ctx.fill();
     ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillText(lbl, X + lw * 4, Y - lw * 3);
@@ -531,7 +594,7 @@ function drawPicture(k, sel) {
   }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const tf = picTf[k] = { s, ox: s * m, oy: s * m }, x0 = tf.ox, y0 = tf.oy, x1 = tf.ox + s * W, y1 = tf.oy + s * H;
+  const tf = picTf[k] = { s, ox: s * m, oy: s * m, k, lens: !P.undistortPics && !!cams[k].lens }, x0 = tf.ox, y0 = tf.oy, x1 = tf.ox + s * W, y1 = tf.oy + s * H;
   ctx.fillStyle = '#16181b'; ctx.fillRect(0, 0, cw, ch);
   ctx.globalAlpha = 0.3; drawScene(ctx, tf, k, 1.4); ctx.globalAlpha = 1;
   ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
@@ -545,7 +608,7 @@ function drawPicture(k, sel) {
 // all the points along it (and the probe) land
 function drawRotation(ctx, tf, k, lw, sel) {
   if (!sel) return;
-  const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; ctx.beginPath(); ctx.arc(tf.ox + tf.s * uv[0], tf.oy + tf.s * uv[1], r, 0, 2 * Math.PI); ctx.stroke(); };
+  const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; circle(ctx, tf, uv, r); };
   const name = k ? 'x₂' : 'x₁';
   let at = null;
   if (sel.kind === 'vertex') at = sel.ok[k] ? sel.q[k].uv : null;
@@ -553,7 +616,7 @@ function drawRotation(ctx, tf, k, lw, sel) {
   else { const q = project(sel.probe.X, k); at = inFront(q, k) ? q.uv : null; }
   if (!at) return;
   if (sel.kind === 'pixel' && sel.k !== k) {
-    ctx.fillStyle = COL.probe; ctx.beginPath(); ctx.arc(tf.ox + tf.s * at[0], tf.oy + tf.s * at[1], lw * 2.6, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = COL.probe; fillDot(ctx, tf, at, lw * 2.6);
     ring(at, lw * 5.5, COL.probe);
     pointLabel(ctx, tf, at, k ? 'x₂ = H x₁' : 'x₁ = H⁻¹ x₂', lw);
   } else {
@@ -572,7 +635,8 @@ function drawTexture(k, sel) {
     textures[k].colorSpace = THREE.SRGBColorSpace; textures[k].anisotropy = 4;
     planeMats[k].map = textures[k]; planeMats[k].needsUpdate = true;
   }
-  const ctx = c.getContext('2d'), tf = { s: Tw / W, ox: 0, oy: 0 };
+  // (the image plane is the pinhole's: drawn undistorted, as the model sees it)
+  const ctx = c.getContext('2d'), tf = { s: Tw / W, ox: 0, oy: 0, k, pinhole: true };
   ctx.fillStyle = '#25282e'; ctx.fillRect(0, 0, Tw, Th);
   drawScene(ctx, tf, k, 2.4);
   drawEpipolar(ctx, tf, k, 2.4, sel);
@@ -1001,14 +1065,16 @@ const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', o
 }
 picCanvas.forEach((canvas, k) => {
   let drag = null, pending = null;
-  const at = e => { const r = canvas.getBoundingClientRect(), tf = picTf[k]; return { X: e.clientX - r.left, Y: e.clientY - r.top, uv: [(e.clientX - r.left - tf.ox) / tf.s, (e.clientY - r.top - tf.oy) / tf.s] }; };
+  // (uv: the model pixel, undistorted, under the pointer)
+  const at = e => { const r = canvas.getBoundingClientRect(), X = e.clientX - r.left, Y = e.clientY - r.top; return { X, Y, uv: fromCanvas(picTf[k], X, Y) }; };
   const vertexNear = p => {
     const cands = [];
     for (const key of Object.keys(SHAPES)) {
       if (!P.show[key] || SHAPES[key].noVertices) continue;
       placed(key).forEach((X, i) => {
         const q = project(X, k);
-        if (inFront(q, k)) cands.push({ obj: key, i, x: picTf[k].ox + picTf[k].s * q.uv[0], y: picTf[k].oy + picTf[k].s * q.uv[1] });
+        const c = inFront(q, k) && toCanvas(picTf[k], q.uv);
+        if (c) cands.push({ obj: key, i, x: c[0], y: c[1] });
       });
     }
     return pickVertex(cands, p.X, p.Y, 14);
@@ -1020,7 +1086,8 @@ picCanvas.forEach((canvas, k) => {
     const sel = selection();
     if (!sel || sel.kind !== 'pixel' || sel.k === k || noBaseline()) return false;
     const q = sel.match ? sel.match.uv : project(sel.probe.X, k).uv, tf = picTf[k];
-    return Math.hypot(tf.ox + tf.s * q[0] - p.X, tf.oy + tf.s * q[1] - p.Y) < 14;
+    const c = toCanvas(tf, q);
+    return !!c && Math.hypot(c[0] - p.X, c[1] - p.Y) < 14;
   };
   const setMatch = p => {
     const sel = selection();
@@ -1127,8 +1194,11 @@ function updateMath(sel) {
       <i class="v">t</i> = <i class="v">t</i>₂ − <i class="v">R t</i>₁ = ${matrix(t.map(x => [x]), x => fx1(x, 3))}</div>
     <div class="note num">Baseline |<i class="v">C</i>₂ − <i class="v">C</i>₁| = ${fmt(baseline, 3)} m.</div>
     <div class="eq"><i class="v">K</i>₁ = ${matrix(cams[0].K, x => fx1(x, 1))} &nbsp; <i class="v">K</i>₂ = ${matrix(cams[1].K, x => fx1(x, 1))}</div>
-    <div class="note num">${cams.map((c, k) => `camera ${k + 1}: ${fmt(c.focal, 3)} mm on ${fmt(P.intr[k].sensorW, 3)} mm, ${c.W} × ${c.H} px`).join('; ')};
+    <div class="note num">${cams.map((c, k) => `camera ${k + 1}: ${fmt(c.focal, 3)} mm on ${fmt(P.intr[k].sensorW, 3)} mm, ${c.W} × ${c.H} px${c.lens ? `, lens distortion k₁ = ${fmt(c.lens.dist.k1, 2)}` : ''}`).join('; ')};
       each with its principal point at its picture's centre.</div>
+    ${cams[0].lens || cams[1].lens ? `<div class="note">With lens distortion, E and F hold for the pinhole's pixels: the pictures undistorted. ${P.undistortPics
+      ? 'The pictures are shown so: straight edges stay straight and the epipolar lines are lines.'
+      : 'The pictures as taken bend straight edges, and the epipolar line with them: the true one (solid) is the curve the line becomes through the lens, the points along a ray all on it. F applied to the pixels as taken (dashed) gives a straight line that misses them, which is why pictures are undistorted before matching.'}</div>` : ''}
     ${baseline < 1e-6 ? '<div class="note warn">The two centres coincide: with no baseline there is no epipolar geometry (E = 0); a pure rotation maps one picture onto the other point for point.</div>' : ''}`);
   html += section('E', 'Essential matrix E = [t]× R', `
     <div class="eq"><i class="v">E</i> = ${matrix(E, x => fmt(x, 3))}</div>
@@ -1176,6 +1246,8 @@ function updateMath(sel) {
         rows.push(['its epipolar line in picture 1: l₁ = Fᵀ x₂', lineTxt(sel.lines[0])]);
         rows.push(['x₂ from l₂', `${fmt(Epi.pointLineDistance(sel.lines[1], sel.q[1].uv), 2)} px`]);
         rows.push(['x₂ᵀ F x₁ (F at unit norm)', fmt(Epi.residual(unitNorm(F), sel.q[0].uv, sel.q[1].uv), 2)]);
+        const nl = naiveLine(sel, 1), raw = nl && asTaken(1, sel.q[1].uv);
+        if (raw) rows.push(['as taken: x₂ from the line F gives for x₁ as taken (dashed)', `${fmt(Epi.pointLineDistance(nl, raw), 3)} px`]);
       }
     } else {
       const o = 1 - sel.k, v = sel.vertex;
@@ -1203,6 +1275,8 @@ function updateMath(sel) {
         if (v.ok[o]) {
           rows.push([`its image in picture ${o + 1}`, vec(v.q[o].uv, 1)]);
           rows.push(['its distance from the line', `${fmt(Epi.pointLineDistance(sel.lines[o], v.q[o].uv), 2)} px`]);
+          const nl = naiveLine(sel, o), raw = nl && asTaken(o, v.q[o].uv);
+          if (raw) rows.push([`as taken: its distance from the line F gives for ${sel.k ? 'x₂' : 'x₁'} as taken (dashed)`, `${fmt(Epi.pointLineDistance(nl, raw), 3)} px`]);
         }
       }
     }
@@ -1236,7 +1310,7 @@ const camFolders = [0, 1].map(k => {
   const f = gui.addFolder(`Camera ${k + 1}`), c = () => P.cams[k], intr = () => P.intr[k];
   // its intrinsics
   const ip = {};
-  for (const key of ['focal', 'sensorW', 'resolution']) Object.defineProperty(ip, key, { get: () => intr()[key], set: v => { intr()[key] = v; } });
+  for (const key of ['focal', 'sensorW', 'resolution', 'k1']) Object.defineProperty(ip, key, { get: () => intr()[key] || 0, set: v => { intr()[key] = v; } });
   addMapped(f, ip, 'focal', 8, 200, 0.1, LOG_MAP).name('focal length f (mm)').onChange(update);
   f.add(ip, 'sensorW', SENSORS).name('sensor').onChange(update);
   f.add(ip, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => {
@@ -1246,6 +1320,8 @@ const camFolders = [0, 1].map(k => {
     if (P.match && P.selected.cam !== k) P.match = [P.match[0] * w / i.W, P.match[1] * h / i.H];
     i.W = w; i.H = h; update();
   });
+  // its lens: radial distortion (the OpenCV model's k₁; negative barrel, positive pincushion)
+  f.add(ip, 'k1', -0.4, 0.4, 0.01).name('lens distortion k₁').onChange(update);
   // and its pose
   const proxy = {};
   for (const key of ['x', 'y', 'z', 'yaw', 'pitch', 'roll']) Object.defineProperty(proxy, key, { get: () => c()[key], set: v => { c()[key] = v; } });
@@ -1264,6 +1340,7 @@ const fView = gui.addFolder('View');
 fView.add(P, 'showPlane').name('epipolar plane of the selection').onChange(update);
 fView.add(P, 'showSamples').name('points along a picked pixel\'s ray').onChange(update);
 fView.add(P, 'showPencil').name('epipolar lines through the epipoles').onChange(update);
+fView.add(P, 'undistortPics').name('pictures undistorted (lens distortion removed)').onChange(update);
 addMapped(fView, P, 'planeScale', 1, 200, 1, LOG_MAP).name('camera enlarged ×').onChange(update);
 gui.add({ reset: () => {
   const keep = clone(DEFAULTS);
