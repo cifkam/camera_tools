@@ -26,7 +26,9 @@ web server (three.js comes from a CDN).
   epipoles, and for the selection its epipolar lines and x₂ᵀ F x₁ = 0.
 - **Presets**: a converging pair; a rectified stereo pair (same orientation, side by side: the epipolar lines are
   horizontal, the epipoles at infinity); forward motion (the epipole is the focus of expansion); and a wide + tele
-  pair (24 mm close by, 70 mm from afar: different K₁ and K₂). Each preset sets both cameras' poses and intrinsics;
+  pair (24 mm close by, 70 mm from afar: different K₁ and K₂); and a pure rotation (one centre, the camera only turned:
+  no baseline, so E = F = 0 and there are no epipolar lines; a picked pixel's whole ray lands on one pixel of the other
+  picture, x₂ = H x₁ with the homography H = K₂ R K₁⁻¹). Each preset sets both cameras' poses and intrinsics;
   each camera's focal length, sensor and resolution can also be set in its folder.
 
 ## Model

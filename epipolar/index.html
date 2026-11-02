@@ -188,6 +188,9 @@ const PRESETS = {
   'forward motion': { cams: [{ x: 0, y: -5.5, z: 1.1, yaw: 0, pitch: 0, roll: 0 }, { x: 0, y: -3.8, z: 1.1, yaw: 0, pitch: 0, roll: 0 }] },
   // a wide-angle camera close by and a long lens from afar (both see the whole scene): K₁ ≠ K₂, F = K₂⁻ᵀ E K₁⁻¹
   'wide + tele (24 / 70 mm)': { cams: [aimed([-2.2, -3.4, 1.6]), aimed([3, -11, 2.4])], intr: [INTR(24), INTR(70)] },
+  // one centre, the camera only turned (towards the cube): no baseline, no epipolar geometry; every point of a ray
+  // lands on one pixel of the other picture, x₂ = H x₁
+  'pure rotation (no baseline)': { cams: [aimed([-1.2, -5.2, 1.6]), aimed([-1.2, -5.2, 1.6], [2.4, 0.4, 0.5])] },
 };
 const presetIntr = name => clone(PRESETS[name].intr || [INTR(), INTR()]);
 const DEFAULTS = {
@@ -239,8 +242,12 @@ function buildCameras() {
   const baseline = Cam.norm(Cam.sub(cams[1].C, cams[0].C));
   geo = { ...f, baseline, e: [Epi.epipole(cams[0], cams[1]), Epi.epipole(cams[1], cams[0])] };
 }
+// the two centres in one place (a pure rotation): no epipolar geometry (E = 0, the lines and epipoles undefined)
+const noBaseline = () => geo.baseline < 1e-6;
 // the epipolar line in camera k of a pixel of the other camera
-const lineIn = (k, uvOther) => k === 1 ? Epi.lineInImage2(geo.F, uvOther) : Epi.lineInImage1(geo.F, uvOther);
+const lineIn = (k, uvOther) => noBaseline() ? null : k === 1 ? Epi.lineInImage2(geo.F, uvOther) : Epi.lineInImage1(geo.F, uvOther);
+// with no baseline, the homography taking picture 1 to picture 2 point for point: x₂ ~ H x₁, H = K₂ R K₁⁻¹
+const homography = () => Cam.mul(Cam.mul(cams[1].K, geo.R), Epi.invK(cams[0].K));
 const project = (X, k) => Cam.projectPoint(X, cams[k]);
 const inFront = (q, k) => q.Xc[2] > cams[k].near;
 
@@ -287,7 +294,7 @@ function pixelSelection(k, uv) {
   // ray tilts out of that plane: the wedge between the two rays, a sheet through the other centre, is seen from there
   // as the stub from the foot to the match. (The rays themselves pass each other, gap apart, where nearest.)
   let match = null;
-  if (P.match) {
+  if (P.match && lines[o]) {
     const l = lines[o], n = Math.hypot(l[0], l[1]), dist = Epi.pointLineDistance(l, P.match);
     const foot = [P.match[0] - dist * l[0] / n, P.match[1] - dist * l[1] / n];
     const mray = Epi.pixelRay(cams[o], P.match), fray = Epi.pixelRay(cams[o], foot), cf = Epi.closestPoints(ray, fray);
@@ -415,7 +422,7 @@ const PENCIL_PTS = () => Array.from({ length: 8 }, (_, i) => {
   return [W / 2 + r * Math.cos(a), H / 2 + r * Math.sin(a)];
 });
 function drawEpipolar(ctx, tf, k, lw, sel) {
-  if (geo.baseline < 1e-6) return;
+  if (noBaseline()) { drawRotation(ctx, tf, k, lw, sel); return; }
   if (P.showPencil) {
     // the same points of picture 1 give the lines in both: through e₁ in picture 1, F x in picture 2
     PENCIL_PTS().forEach((p, i) => {
@@ -524,6 +531,26 @@ function drawPicture(k, sel) {
   ctx.restore();
   ctx.strokeStyle = COL.cams[k]; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
   drawEpipolar(ctx, tf, k, 1.4, sel);
+}
+// with no baseline: a picked pixel's ray seen by the other camera from the same centre is one point, x₂ = H x₁, where
+// all the points along it (and the probe) land
+function drawRotation(ctx, tf, k, lw, sel) {
+  if (!sel) return;
+  const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; ctx.beginPath(); ctx.arc(tf.ox + tf.s * uv[0], tf.oy + tf.s * uv[1], r, 0, 2 * Math.PI); ctx.stroke(); };
+  const name = k ? 'x₂' : 'x₁';
+  let at = null;
+  if (sel.kind === 'vertex') at = sel.ok[k] ? sel.q[k].uv : null;
+  else if (sel.k === k) at = sel.uv;
+  else { const q = project(sel.probe.X, k); at = inFront(q, k) ? q.uv : null; }
+  if (!at) return;
+  if (sel.kind === 'pixel' && sel.k !== k) {
+    ctx.fillStyle = COL.probe; ctx.beginPath(); ctx.arc(tf.ox + tf.s * at[0], tf.oy + tf.s * at[1], lw * 2.6, 0, 2 * Math.PI); ctx.fill();
+    ring(at, lw * 5.5, COL.probe);
+    pointLabel(ctx, tf, at, k ? 'x₂ = H x₁' : 'x₁ = H⁻¹ x₂', lw);
+  } else {
+    ring(at, lw * 5, COL.selected);
+    pointLabel(ctx, tf, at, name, lw);
+  }
 }
 // the picture on camera k's image plane in 3D: only the picture's own area
 const textures = [null, null];
@@ -944,7 +971,7 @@ picCanvas.forEach((canvas, k) => {
   // becomes a candidate match (snapping onto the line when near it)
   const probeNear = p => {
     const sel = selection();
-    if (!sel || sel.kind !== 'pixel' || sel.k === k) return false;
+    if (!sel || sel.kind !== 'pixel' || sel.k === k || noBaseline()) return false;
     const q = sel.match ? sel.match.uv : project(sel.probe.X, k).uv, tf = picTf[k];
     return Math.hypot(tf.ox + tf.s * q[0] - p.X, tf.oy + tf.s * q[1] - p.Y) < 14;
   };
@@ -989,7 +1016,7 @@ const fmt = (x, p = 4) => {
   const s = String(+x.toPrecision(p));
   return s.includes('e') ? x.toExponential(p - 1) : s.replace('-', '−');
 };
-const fx1 = (x, n = 1) => isFinite(x) ? x.toFixed(n).replace('-', '−') : '∞';
+const fx1 = (x, n = 1) => isFinite(x) ? (Math.abs(x) < 0.5 * 10 ** -n ? 0 : x).toFixed(n).replace('-', '−') : '∞';   // (no −0.000)
 const vec = (v, n = 3) => '(' + v.map(x => fx1(x, n)).join(', ') + ')';
 function matrix(rows, f = fmt) {
   return `<span class="mat" style="grid-template-columns: repeat(${rows[0].length}, auto)">` + rows.map(r => r.map(x => `<span>${f(x)}</span>`).join('')).join('') + '</span>';
@@ -1028,14 +1055,33 @@ function updateMath(sel) {
     <div class="note">x̂₂ᵀ <i class="v">E</i> x̂₁ = 0 for the normalised coordinates x̂ = <i class="v">K</i>⁻¹ x of any scene point's two
       images: the vectors from <i class="v">C</i>₁ and <i class="v">C</i>₂ to the point and the baseline <i class="v">t</i> lie in one plane, the epipolar plane.</div>`);
   html += section('F', 'Fundamental matrix F = K₂⁻ᵀ E K₁⁻¹', `
-    <div class="eq"><i class="v">F</i> = ${matrix(unitNorm(F), x => fmt(x, 3))}</div>
+    <div class="eq"><i class="v">F</i> = ${matrix(baseline < 1e-6 ? F.map(r => r.map(() => 0)) : unitNorm(F), x => fmt(x, 3))}</div>
     <div class="note">(scaled to unit norm; F is only defined up to scale.) x₂ᵀ <i class="v">F</i> x₁ = 0 for pixels; the epipolar
       line of x₁ in picture 2 is l₂ = <i class="v">F</i> x₁, of x₂ in picture 1 l₁ = <i class="v">F</i>ᵀ x₂. F has rank 2: all
       epipolar lines of a picture pass through its epipole.</div>
-    <table class="steps">
+    ${baseline < 1e-6 ? '<div class="note warn">With no baseline E and F are zero (to rounding): there are no epipoles and no epipolar lines.</div>' : `<table class="steps">
       <tr><td>epipole e₁ (the image of C₂ in camera 1; F e₁ = 0)</td><td>${epipoleTxt(0)}</td></tr>
       <tr><td>epipole e₂ (the image of C₁ in camera 2; Fᵀ e₂ = 0)</td><td>${epipoleTxt(1)}</td></tr>
-    </table>`);
+    </table>`}`);
+  if (baseline < 1e-6) {
+    // a pure rotation: the homography, and where the selection goes
+    const rows = [];
+    if (sel && sel.kind === 'pixel') {
+      const o = 1 - sel.k, q = project(sel.probe.X, o), xs = ['x₁', 'x₂'];
+      rows.push([`${xs[sel.k]} (picked in picture ${sel.k + 1})`, vec(sel.uv, 1)]);
+      if (inFront(q, o)) rows.push([`${xs[o]} = ${o ? 'H x₁' : 'H⁻¹ x₂'}: every point of its ray, at any depth`, vec(q.uv, 1)]);
+    } else if (sel && sel.kind === 'vertex') {
+      if (sel.ok[0]) rows.push(['x₁', vec(sel.q[0].uv, 1)]);
+      if (sel.ok[1]) rows.push(['x₂ = H x₁', vec(sel.q[1].uv, 1)]);
+    }
+    html += section('H', 'Homography H = K₂ R K₁⁻¹ (pure rotation)', `
+      <div class="eq"><i class="v">H</i> = ${matrix((H => H.map(r => r.map(x => x / H[2][2])))(homography()), x => fmt(x, 3))}</div>
+      <div class="note">(scaled to H₃₃ = 1; like F, H is only defined up to scale.) Seen from one centre, a ray is a single point in both pictures: x₂ ~ <i class="v">H</i> x₁
+        for every scene point, whatever its depth. The pictures map onto each other point for point, which is how a panorama
+        is stitched, and nothing about depth can be learned: moving a camera's centre off the other's brings the epipolar
+        geometry back.</div>
+      ${rows.length ? `<table class="steps">${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>` : ''}`);
+  }
   if (sel && baseline > 1e-6) {
     const rows = [];
     let title;
