@@ -25,6 +25,9 @@
   #gui .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
   #side { overflow-y: auto; padding: 8px 14px 24px; }
   .picHead { font-weight: 600; color: #c8ccd4; margin: 2px 0 2px; }
+  /* the pictures: collapsible, but plain (not the maths panel's cards) */
+  details.picBox { background: none; border: 0; border-radius: 0; margin: 0; padding: 0; }
+  details.picBox[open] summary { margin-bottom: 2px; }
   .picHead .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   canvas.pic { display: block; touch-action: none; margin: 0 auto 6px; cursor: crosshair; }
   .caption { color: #9aa0a8; font-size: 12px; margin: 2px 0 8px; }
@@ -67,15 +70,15 @@
 <body>
 <div id="app">
   <section id="world">
-    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex, or tap or drag in a picture to pick a pixel; drag its ray's orange point; drag a camera centre (Shift: height) · </span><a href="../">all tools</a></div>
+    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex, or tap or drag in a picture to pick a pixel; drag its ray's orange point, or its ring in the other picture (also off the line); drag a camera centre (Shift: height) · </span><a href="../">all tools</a></div>
     <div id="gui"></div>
   </section>
   <div id="splitter" title="drag to share the width"></div>
   <section id="side">
-    <div class="picHead"><span class="sw" id="sw0"></span>Camera 1</div>
-    <canvas class="pic" id="pic0"></canvas>
-    <div class="picHead"><span class="sw" id="sw1"></span>Camera 2</div>
-    <canvas class="pic" id="pic1"></canvas>
+    <details class="picBox" id="picBox0" open><summary class="picHead"><span class="sw" id="sw0"></span>Camera 1</summary>
+      <canvas class="pic" id="pic0"></canvas></details>
+    <details class="picBox" id="picBox1" open><summary class="picHead"><span class="sw" id="sw1"></span>Camera 2</summary>
+      <canvas class="pic" id="pic1"></canvas></details>
     <div class="caption" id="caption"></div>
     <div id="math"></div>
   </section>
@@ -151,7 +154,7 @@ const COL = {
   x: '#ff5c5c', y: '#5fd35f', z: '#5c8cff', grid: '#4a4f58',
   cams: ['#ff9f43', '#2ed3b7'],   // camera 1, camera 2
   epi: '#ff5cd1',                 // the epipolar plane and lines of the selection
-  epipole: '#ffd84f', baseline: '#ffd84f', selected: '#ffffff', probe: '#ffb347',
+  epipole: '#ffd84f', baseline: '#ffd84f', selected: '#ffffff', probe: '#ffb347', gap: '#ff5c5c',
 };
 const SHAPES = {
   board: { label: 'checkerboard', geom: Cam.checkerboard(7, 5, 0.25), color: COL.board },
@@ -197,6 +200,7 @@ const DEFAULTS = {
   // plane: see the presets); or { kind: 'pixel', cam, uv }
   selected: { kind: 'vertex', obj: 'cube', i: 7, cam: 0 },
   probe: null,   // metres along a picked pixel's ray: the point dragged along it (null: on the last but one marked)
+  match: null,   // [u, v]: a candidate match of a picked pixel in the other picture, dragged there freely (null: none)
   planeScale: 25, showPlane: true, showPencil: false, showSamples: true,
 };
 const STORE = 'epipolar.state';
@@ -277,8 +281,27 @@ function pixelSelection(k, uv) {
   } else depths = Array.from({ length: SAMPLES }, (_, j) => SAMPLE_CAP * (j + 1) / (SAMPLES + 1));   // the ray along the baseline
   const samples = depths.map(d => Cam.add(ray.C, Cam.scale(ray.dir, d)));
   const pd = P.probe ?? depths[SAMPLES - 2];
-  const probe = { depth: pd, X: Cam.add(ray.C, Cam.scale(ray.dir, pd)) };
-  return { kind: 'pixel', k, uv, ray, samples, depths, lines, probe };
+  let probe = { depth: pd, X: Cam.add(ray.C, Cam.scale(ray.dir, pd)) };
+  // a candidate match dragged in the other picture. Moved onto the line, to the nearest point there (the foot), it
+  // is a true match: the foot's ray lies in the epipolar plane and meets the picked ray, at the probe. The match's own
+  // ray tilts out of that plane: the wedge between the two rays, a sheet through the other centre, is seen from there
+  // as the stub from the foot to the match. (The rays themselves pass each other, gap apart, where nearest.)
+  let match = null;
+  if (P.match) {
+    const l = lines[o], n = Math.hypot(l[0], l[1]), dist = Epi.pointLineDistance(l, P.match);
+    const foot = [P.match[0] - dist * l[0] / n, P.match[1] - dist * l[1] / n];
+    const mray = Epi.pixelRay(cams[o], P.match), fray = Epi.pixelRay(cams[o], foot), cf = Epi.closestPoints(ray, fray);
+    if (cf) {
+      const d = Math.max(PROBE_RANGE[0], Math.min(PROBE_RANGE[1], cf.d1)), X = Cam.add(ray.C, Cam.scale(ray.dir, d));
+      // the wedge's far edge: on the match's ray as far from the centre as the probe
+      const r = Cam.norm(Cam.sub(X, mray.C)), M = Cam.add(mray.C, Cam.scale(mray.dir, r));
+      const cp = Epi.closestPoints(ray, mray);
+      match = { uv: P.match, foot, dist, ray: mray, X, M, line: lineIn(k, P.match), ahead: cf.d1 > 0 && cf.d2 > 0,
+        angle: Math.acos(Math.min(1, Cam.dot(mray.dir, fray.dir))) * 180 / Math.PI, gap: cp ? cp.gap : NaN };
+      probe = { depth: d, X };
+    }
+  }
+  return { kind: 'pixel', k, uv, ray, samples, depths, lines, probe, match };
 }
 function selection() {
   const s = P.selected;
@@ -297,7 +320,7 @@ function selection() {
       sel.depths.forEach((d, j) => { if (Math.abs(d - depth) < Math.abs(sel.depths[near] - depth)) near = j; });
       sel.samples[near] = X;
       // the probe starts on the vertex itself: where the other camera really sees it
-      const probe = P.probe == null ? { depth, X } : sel.probe;
+      const probe = P.probe == null && !sel.match ? { depth, X } : sel.probe;
       return { ...sel, probe, vertex: { X, q, ok, at: near, depth } };
     }
     return { kind: 'vertex', X, q, ok, lines: [ok[1] ? lineIn(0, q[1].uv) : null, ok[0] ? lineIn(1, q[0].uv) : null] };
@@ -338,12 +361,12 @@ function pointLabel(ctx, tf, [u, v], text, lw) {
   ctx.fillStyle = COL.selected; ctx.fillText(text, X, Y);
 }
 // a line's name, written along it just above, near its right end in the picture (upright whichever way it runs), or
-// its left end when a point labelled on it (avoid, in pixels) sits near the right one
-function labelLine(ctx, tf, k, l, text, color, lw, avoid = null) {
+// its left end when a point labelled on it (avoid: such points, in pixels) sits near the right one
+function labelLine(ctx, tf, k, l, text, color, lw, avoid = []) {
   const seg = l && Epi.clipLine(l, 0, 0, cams[k].W, cams[k].H);
   if (!seg) return;
   const [a, b] = seg[0][0] <= seg[1][0] ? seg : [seg[1], seg[0]];
-  const right = !avoid || Math.hypot(avoid[0] - b[0], avoid[1] - b[1]) > 0.3 * cams[k].W;
+  const right = !avoid.some(p => Math.hypot(p[0] - b[0], p[1] - b[1]) < 0.3 * cams[k].W);
   const t = right ? 0.97 : 0.03, u = a[0] + (b[0] - a[0]) * t, v = a[1] + (b[1] - a[1]) * t;
   ctx.save();
   ctx.translate(tf.ox + tf.s * u, tf.oy + tf.s * v);
@@ -403,8 +426,9 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
   if (sel) {
     drawLine(ctx, tf, k, sel.lines[k], COL.epi, lw * 1.3);
     // (out of the way of the point labelled on it in this picture, if any: see below)
-    const onIt = sel.kind === 'vertex' ? (sel.ok[k] ? sel.q[k].uv : null) : sel.k === k ? sel.uv : sel.vertex && sel.vertex.ok[k] ? sel.vertex.q[k].uv : null;
-    labelLine(ctx, tf, k, sel.lines[k], k ? 'l₂ = F x₁' : 'l₁ = Fᵀ x₂', COL.epi, lw, onIt);
+    const onIt = sel.kind === 'vertex' ? [sel.ok[k] && sel.q[k].uv] : sel.k === k ? [sel.uv]
+      : [sel.vertex && sel.vertex.ok[k] && sel.vertex.q[k].uv, sel.match ? sel.match.uv : project(sel.probe.X, k).uv];
+    labelLine(ctx, tf, k, sel.lines[k], k ? 'l₂ = F x₁' : 'l₁ = Fᵀ x₂', COL.epi, lw, onIt.filter(Boolean));
     const ring = (uv, r, color) => { ctx.strokeStyle = color; ctx.lineWidth = lw * 1.2; ctx.beginPath(); ctx.arc(tf.ox + tf.s * uv[0], tf.oy + tf.s * uv[1], r, 0, 2 * Math.PI); ctx.stroke(); };
     if (sel.kind === 'vertex' && sel.ok[k]) ring(sel.q[k].uv, lw * 5, COL.selected);
     if (sel.kind === 'pixel') {
@@ -421,12 +445,21 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
         if (sel.vertex && sel.vertex.ok[k]) ring(sel.vertex.q[k].uv, lw * 5, COL.selected);
       }
       if (sel.k !== k) {
-        // the probe, where the other camera sees it
-        const q = project(sel.probe.X, k);
-        if (inFront(q, k)) {
-          ctx.fillStyle = COL.probe; ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.uv[0], tf.oy + tf.s * q.uv[1], lw * 2.6, 0, 2 * Math.PI); ctx.fill();
-          ring(q.uv, lw * 5.5, COL.probe);
+        // the probe, where the other camera sees it, or the match dragged here: off the line, the way to it dashed
+        const m = sel.match, q = m ? null : project(sel.probe.X, k), at = m ? m.uv : inFront(q, k) ? q.uv : null;
+        if (m && Math.abs(m.dist) * tf.s > lw) {
+          const foot = m.foot;
+          ctx.strokeStyle = COL.gap; ctx.lineWidth = lw; ctx.setLineDash([lw * 3, lw * 2]);
+          ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * foot[0], tf.oy + tf.s * foot[1]); ctx.lineTo(tf.ox + tf.s * m.uv[0], tf.oy + tf.s * m.uv[1]); ctx.stroke();
+          ctx.setLineDash([]);
         }
+        if (at) {
+          ctx.fillStyle = COL.probe; ctx.beginPath(); ctx.arc(tf.ox + tf.s * at[0], tf.oy + tf.s * at[1], lw * 2.6, 0, 2 * Math.PI); ctx.fill();
+          ring(at, lw * 5.5, COL.probe);
+        }
+      } else if (sel.match && Math.abs(sel.match.dist) > 0.05) {
+        // here, the match's own epipolar line: through x only when the match is on x's line
+        drawLine(ctx, tf, k, sel.match.line, COL.probe, lw * 0.9, [lw * 4, lw * 3]);
       }
     }
     // the selected point's images: x₁, x₂ (only in its own picture for a plain pixel: in the other there is no one match)
@@ -434,7 +467,14 @@ function drawEpipolar(ctx, tf, k, lw, sel) {
     if (sel.kind === 'vertex' && sel.ok[k]) pointLabel(ctx, tf, sel.q[k].uv, name, lw);
     if (sel.kind === 'pixel') {
       if (sel.k === k) pointLabel(ctx, tf, sel.uv, name, lw);
-      else if (sel.vertex && sel.vertex.ok[k]) pointLabel(ctx, tf, sel.vertex.q[k].uv, name, lw);
+      else {
+        // the vertex's image, the real match, and the probe's (dragged in 3D or here), a candidate: one label where
+        // they coincide
+        const v = sel.vertex && sel.vertex.ok[k] ? sel.vertex.q[k].uv : null;
+        const pq = sel.match ? null : project(sel.probe.X, k), p = sel.match ? sel.match.uv : inFront(pq, k) ? pq.uv : null;
+        if (v) pointLabel(ctx, tf, v, name, lw);
+        if (p && !(v && Math.hypot(p[0] - v[0], p[1] - v[1]) * tf.s < lw * 6)) pointLabel(ctx, tf, p, name + '′', lw);
+      }
     }
   }
   // the epipole
@@ -707,7 +747,17 @@ function rebuild3D(sel) {
       // the probe (drag it along the ray), and the other camera's ray to it
       // above every other marker too (it starts on the picked vertex, whose white dot would hide it)
       dyn.add(points([sel.probe.X], pointMat(COL.probe, 13, true), 11));
+      const m = sel.match;
       dyn.add(segments([rayTo(1 - sel.k, sel.probe.X)], lineMat(COL.probe)));
+      if (m && Math.abs(m.dist) > 0.05) {
+        // the match's own ray, out of the epipolar plane, and the wedge between it and the ray to the probe: from the
+        // other centre, the stub in its picture
+        const far = Math.max(16, Cam.norm(Cam.sub(m.M, m.ray.C)) * 1.3);
+        dyn.add(segments([[m.ray.C, Cam.add(m.ray.C, Cam.scale(m.ray.dir, far))]], lineMat(COL.probe, 0.6)));
+        dyn.add(fan([m.ray.C, m.X, m.M], fillMat(COL.gap, 0.25)));
+        dyn.add(segments([[m.X, m.M]], dashMat(COL.gap)));
+        dyn.add(points([m.M], pointMat(COL.gap, 9, true), 11));
+      }
       if (P.showSamples) {
         dyn.add(points(sel.samples, pointMat(COL.epi, 8, true)));
         // and the other camera's rays to them, all in the epipolar plane
@@ -750,7 +800,7 @@ function pickVertex(candidates, x, y, reach) {
   return best;
 }
 // cam: the picture it was picked in (undefined: in the 3D view)
-const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', obj: hit.obj, i: hit.i, cam }; P.probe = null; update(); } };
+const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', obj: hit.obj, i: hit.i, cam }; P.probe = null; P.match = null; update(); } };
 // the probe: dragged along its ray, to where the other camera's ray towards the pointer meets it. That is where the
 // ray is cut by the plane through the viewer, the other camera's centre and the pointer's line of sight: on the screen,
 // where the line from the other centre through the pointer crosses the ray, so the probe follows the other camera's
@@ -781,6 +831,7 @@ const selectVertex = (hit, cam) => { if (hit) { P.selected = { kind: 'vertex', o
     const t = n.dot(E.clone().sub(A)) / den;
     if (!(t > 0)) return;   // the other camera's ray towards the pointer meets the picked ray behind its camera
     P.probe = Math.round(Math.max(PROBE_RANGE[0], Math.min(PROBE_RANGE[1], t)) * 100) / 100;
+    P.match = null;   // back on the ray: no gap
     update();
   }
   worldEl.addEventListener('pointerdown', e => {
@@ -888,23 +939,43 @@ picCanvas.forEach((canvas, k) => {
     }
     return pickVertex(cands, p.X, p.Y, 14);
   };
-  const pickPixel = p => { P.selected = { kind: 'pixel', cam: k, uv: p.uv.map(v => Math.round(v * 10) / 10) }; P.probe = null; update(); };
+  const pickPixel = p => { P.selected = { kind: 'pixel', cam: k, uv: p.uv.map(v => Math.round(v * 10) / 10) }; P.probe = null; P.match = null; update(); };
+  // the probe's ring in the picture of the other camera than the picked pixel's, if within reach: dragged anywhere, it
+  // becomes a candidate match (snapping onto the line when near it)
+  const probeNear = p => {
+    const sel = selection();
+    if (!sel || sel.kind !== 'pixel' || sel.k === k) return false;
+    const q = sel.match ? sel.match.uv : project(sel.probe.X, k).uv, tf = picTf[k];
+    return Math.hypot(tf.ox + tf.s * q[0] - p.X, tf.oy + tf.s * q[1] - p.Y) < 14;
+  };
+  const setMatch = p => {
+    const sel = selection();
+    if (!sel || sel.kind !== 'pixel' || sel.k === k) return;
+    const l = sel.lines[k], n = Math.hypot(l[0], l[1]), dist = Epi.pointLineDistance(l, p.uv);
+    // (on the line exactly: not rounded)
+    P.match = Math.abs(dist) * picTf[k].s < 6 ? [p.uv[0] - dist * l[0] / n, p.uv[1] - dist * l[1] / n] : p.uv.map(v => Math.round(v * 100) / 100);
+    update();
+  };
   canvas.addEventListener('pointerdown', e => {
     const p = at(e), hit = vertexNear(p);
     canvas.setPointerCapture(e.pointerId);
-    // on a vertex: a tap selects it; elsewhere the pixel follows the pointer
+    // on the probe: dragged, a match (a tap still selects a vertex under it); on a vertex: a tap selects it; elsewhere
+    // the pixel follows the pointer
+    if (probeNear(p)) { drag = { match: true, hit, X: p.X, Y: p.Y }; canvas.style.cursor = 'grabbing'; return; }
     drag = hit ? { hit, X: p.X, Y: p.Y } : { pixel: true };
     if (!hit) pickPixel(p);
   });
   canvas.addEventListener('pointermove', e => {
-    if (!drag) return;
     const p = at(e);
-    if (drag.hit && Math.hypot(p.X - drag.X, p.Y - drag.Y) > 6) drag = { pixel: true };   // dragged off: a pixel after all
-    if (!drag.pixel) return;
-    if (!pending) requestAnimationFrame(() => { pickPixel(pending); pending = null; });
+    if (!drag) { canvas.style.cursor = !e.buttons && probeNear(p) ? 'grab' : ''; return; }
+    if (drag.hit && Math.hypot(p.X - drag.X, p.Y - drag.Y) > 6) drag = drag.match ? { match: true, moved: true } : { pixel: true };   // dragged off: not a tap
+    if (drag.match && !drag.moved && Math.hypot(p.X - drag.X, p.Y - drag.Y) > 3) drag.moved = true;
+    if (!drag.pixel && !(drag.match && drag.moved)) return;
+    const fn = drag.match ? setMatch : pickPixel;
+    if (!pending) requestAnimationFrame(() => { fn(pending); pending = null; });
     pending = p;
   });
-  const end = () => { if (drag && drag.hit) selectVertex(drag.hit, k); drag = null; };
+  const end = () => { if (drag && drag.hit) selectVertex(drag.hit, k); drag = null; canvas.style.cursor = ''; };
   canvas.addEventListener('pointerup', end);
   canvas.addEventListener('pointercancel', () => { drag = null; });
 });
@@ -985,9 +1056,21 @@ function updateMath(sel) {
       rows.push([`x${sel.k ? '₂' : '₁'}`, vec(sel.uv, 1)]);
       rows.push([`its ray: C${sel.k ? '₂' : '₁'} + d · direction`, vec(sel.ray.dir, 3)]);
       rows.push([`its epipolar line in picture ${o + 1}: ${o ? 'l₂ = F x₁' : 'l₁ = Fᵀ x₂'}`, lineTxt(sel.lines[o])]);
-      const pq = project(sel.probe.X, o);
-      rows.push(['the probe (orange, drag it along the ray): at d', `${fmt(sel.probe.depth, 3)} m`]);
-      if (inFront(pq, o)) rows.push([`its image in picture ${o + 1}, on the line`, vec(pq.uv, 1)]);
+      const pq = project(sel.probe.X, o), m = sel.match, xs = ['x₁', 'x₂'];
+      if (m) {
+        // the residual with x₁ and x₂ in their places, whichever picture the pixel was picked in
+        const [a, b] = sel.k ? [m.uv, sel.uv] : [sel.uv, m.uv];
+        rows.push([`candidate match ${xs[o]}′ (the orange ring, dragged in picture ${o + 1})`, vec(m.uv, 1)]);
+        rows.push([`its distance from ${o ? 'l₂' : 'l₁'}`, `${fmt(m.dist, 3)} px`]);
+        rows.push([`${sel.k ? 'x₂ᵀ F x₁′' : 'x₂′ᵀ F x₁'} (F at unit norm)`, fmt(Epi.residual(unitNorm(F), a, b), 3)]);
+        rows.push([`its ray: out of the epipolar plane by (the red wedge)`, `${fmt(m.angle, 3)}°`]);
+        rows.push(['the two rays: the gap between them where nearest', m.gap < 5e-4 ? '0: they meet' : `${fmt(m.gap * 1000, 3)} mm`]);
+        rows.push([`the probe: where the match moved onto the line triangulates, at d`, `${fmt(sel.probe.depth, 3)} m`]);
+        if (!m.ahead) rows.push(['', '<span class="warn">moved onto the line, the match is seen behind a camera</span>']);
+      } else {
+        rows.push(['the probe (orange, drag it along the ray, or off the line in the other picture): at d', `${fmt(sel.probe.depth, 3)} m`]);
+        if (inFront(pq, o)) rows.push([`its image in picture ${o + 1}, on the line`, vec(pq.uv, 1)]);
+      }
       if (v) {
         rows.push(['the vertex: on the ray at d', `${fmt(v.depth, 3)} m`]);
         if (v.ok[o]) {
@@ -998,7 +1081,8 @@ function updateMath(sel) {
     }
     html += section('sel', title, `<table class="steps">${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>
       <div class="note">${sel.kind === 'pixel'
-        ? `Every scene point on this pixel's ray (the dots, ${sel.vertex ? 'the vertex among them' : 'spaced by equal angles as the other camera sees them'}) lands on the line in the other picture: from one picture alone the depth is unknown, and the search for the match is along that line.${sel.vertex ? ' The vertex is the one that is really there: its image is ringed on the line.' : ''}`
+        ? `Every scene point on this pixel's ray (the dots, ${sel.vertex ? 'the vertex among them' : 'spaced by equal angles as the other camera sees them'}) lands on the line in the other picture: from one picture alone the depth is unknown, and the search for the match is along that line.${sel.vertex ? ' The vertex is the one that is really there: its image is ringed on the line.' : ''}${sel.match
+          ? ` A candidate match on the line (it snaps there) gives a ray that meets this one: the two triangulate a scene point. Off the line its ray tilts out of the epipolar plane (the red wedge, which the other camera sees edge on as the red stub), the rays pass each other, no scene point is seen at both pixels and x₂ᵀ F x₁ ≠ 0; its own epipolar line (dashed orange) misses ${sel.k ? 'x₂' : 'x₁'} too. Moved onto the line (the stub's foot), it triangulates the probe.` : ''}`
         : `The point, both centres and both images lie in the epipolar plane; the plane cuts each image plane in the epipolar line.`}</div>`);
   }
   el.innerHTML = html;
@@ -1018,7 +1102,7 @@ const gui = new GUI({ container: document.getElementById('gui'), title: 'Cameras
 const refresh = () => gui.controllersRecursive().forEach(c => c.updateDisplay());
 gui.add(P, 'preset', Object.keys(PRESETS)).name('preset').onChange(name => {
   P.cams = clone(PRESETS[name].cams); P.intr = presetIntr(name);
-  P.probe = null;
+  P.probe = null; P.match = null;
   update();
 });
 const camFolders = [0, 1].map(k => {
@@ -1032,6 +1116,7 @@ const camFolders = [0, 1].map(k => {
     // the same lens and sensor sampled more or less finely: a pixel picked in this picture keeps its place
     const [w, h] = RESOLUTIONS[v], i = intr();
     if (P.selected.kind === 'pixel' && P.selected.cam === k) P.selected.uv = [P.selected.uv[0] * w / i.W, P.selected.uv[1] * h / i.H];
+    if (P.match && P.selected.cam !== k) P.match = [P.match[0] * w / i.W, P.match[1] * h / i.H];
     i.W = w; i.H = h; update();
   });
   // and its pose
@@ -1064,6 +1149,12 @@ camFolders.forEach(f => f.close()); fScene.close(); fView.close();
 if (matchMedia('(max-width: 760px)').matches) gui.close();
 document.getElementById('sw0').style.background = COL.cams[0];
 document.getElementById('sw1').style.background = COL.cams[1];
+// which pictures are folded away, remembered in this browser
+[0, 1].forEach(k => {
+  const box = document.getElementById('picBox' + k), KEY = 'epipolar.pic' + k;
+  try { if (localStorage.getItem(KEY) === 'closed') box.open = false; } catch (e) { /* storage blocked */ }
+  box.addEventListener('toggle', () => { try { localStorage.setItem(KEY, box.open ? 'open' : 'closed'); } catch (e) { /* ignore */ } });
+});
 
 // ----------------------------------------------------------------------------
 function update() {

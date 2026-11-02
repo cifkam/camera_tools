@@ -64,6 +64,19 @@ const ef = Epi.epipole(s1, f2);
 check('forward motion: the epipole is the principal point (u)', ef[0] / ef[2], 640, 1e-9);
 check('forward motion: (v)', ef[1] / ef[2], 360, 1e-9);
 
+// two rays: a match on the epipolar line triangulates the point (the rays meet), one off it leaves a gap
+{
+  const X = [0.7, 1.9, 0.5], x1 = Cam.projectPoint(X, c1).uv, x2 = Cam.projectPoint(X, c2).uv;
+  const cp = Epi.closestPoints(Epi.pixelRay(c1, x1), Epi.pixelRay(c2, x2));
+  check('a true match: the rays meet (gap 0)', cp.gap, 0, 1e-9);
+  check('a true match: they meet at the scene point', Math.hypot(...Cam.sub(cp.P1, X)), 0, 1e-9);
+  const off = Epi.closestPoints(Epi.pixelRay(c1, x1), Epi.pixelRay(c2, [x2[0], x2[1] + 20]));
+  check('a match off the line: the rays pass each other (gap > 1 cm)', off.gap > 0.01, true, 0);
+  const n = Cam.sub(off.P1, off.P2);
+  check('the gap is across both rays', Math.abs(Cam.dot(n, Epi.pixelRay(c1, x1).dir)) + Math.abs(Cam.dot(n, Epi.pixelRay(c2, [x2[0], x2[1] + 20]).dir)), 0, 1e-9);
+  check('parallel rays: null', Epi.closestPoints({ C: [0, 0, 0], dir: [1, 0, 0] }, { C: [0, 1, 0], dir: [1, 0, 0] }), null, 0);
+}
+
 // clipping a line to the picture
 const seg = Epi.clipLine([0, 1, -100], 0, 0, 640, 480);
 check('clip a horizontal line: from u = 0', seg[0][0] + seg[1][0], 640, 1e-12);

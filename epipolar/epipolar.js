@@ -67,8 +67,18 @@
     return { C: centreOf(cam), dir: d.map(x => x / n) };
   }
 
+  // the nearest points of two rays C + d · dir (unit directions): d1 and d2 along them, the points P1 and P2 and the gap
+  // between them (0 where the rays meet); null when they are parallel
+  function closestPoints(ray1, ray2) {
+    const w = sub(ray1.C, ray2.C), c = dot(ray1.dir, ray2.dir), den = 1 - c * c;
+    if (den < 1e-12) return null;
+    const d1 = (c * dot(ray2.dir, w) - dot(ray1.dir, w)) / den, d2 = dot(ray2.dir, w) + d1 * c;
+    const P1 = ray1.C.map((x, i) => x + d1 * ray1.dir[i]), P2 = ray2.C.map((x, i) => x + d2 * ray2.dir[i]);
+    return { d1, d2, P1, P2, gap: Math.hypot(...sub(P1, P2)) };
+  }
+
   const Epi = { skew, invK, relativePose, essential, fundamental, centreOf, epipole, lineInImage1, lineInImage2,
-    pointLineDistance, residual, clipLine, pixelRay, cross, dot };
+    pointLineDistance, residual, clipLine, pixelRay, closestPoints, cross, dot };
   root.Epi = Epi;
   if (typeof module !== 'undefined' && module.exports) module.exports = Epi;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

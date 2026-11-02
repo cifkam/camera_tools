@@ -17,7 +17,11 @@ web server (three.js comes from a CDN).
   for along that line. A point on the ray (orange, at first the last but one, or the vertex when one was picked) can
   be dragged along it in the 3D view, its image sliding along the line. A vertex tapped in a picture works the same,
   the point nearest it on the ray being the vertex itself (its image ringed on the line). Optionally a set of epipolar
-  lines in matching colours, all through the epipoles.
+  lines in matching colours, all through the epipoles. The probe's ring in the other picture can be dragged too,
+  anywhere: a candidate match. On the line (it snaps there) its ray meets the picked one and the two triangulate a
+  point; off it its ray tilts out of the epipolar plane (a red wedge in 3D, seen by its camera edge on as the red stub
+  to the line), the rays pass each other, x₂ᵀ F x₁ ≠ 0, and the match's own epipolar line (dashed) misses the picked
+  pixel. The probe is then where the match moved onto the line (the stub's foot) triangulates.
 - **Maths**: the relative pose R, t, the essential matrix E = [t]× R, the fundamental matrix F = K₂⁻ᵀ E K₁⁻¹, the
   epipoles, and for the selection its epipolar lines and x₂ᵀ F x₁ = 0.
 - **Presets**: a converging pair; a rectified stereo pair (same orientation, side by side: the epipolar lines are
@@ -36,6 +40,6 @@ epipolar lines are straight only without it.
 ## Files
 
 - `index.html` – the page.
-- `epipolar.js` – the two-view maths (classic script, also loadable under node).
+- `epipolar.js` – the two-view maths, the nearest points of two rays included (classic script, also loadable under node).
 - `camera.js` – pose, projection and the scene's primitives; a copy of the one in the pinhole page.
 - `test_epipolar.js` – checks, including F against OpenCV's `cv2.findFundamentalMat`: `node epipolar/test_epipolar.js`.
