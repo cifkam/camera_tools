@@ -23,7 +23,9 @@ web server (three.js comes from a CDN).
   to the line), the rays pass each other, x₂ᵀ F x₁ ≠ 0, and the match's own epipolar line (dashed) misses the picked
   pixel. The probe is then where the match moved onto the line (the stub's foot) triangulates.
 - **Maths**: the relative pose R, t, the essential matrix E = [t]× R, the fundamental matrix F = K₂⁻ᵀ E K₁⁻¹, the
-  epipoles, and for the selection its epipolar lines and x₂ᵀ F x₁ = 0.
+  epipoles, and for the selection its epipolar lines and x₂ᵀ F x₁ = 0. E's structure: its singular values (|t|, |t|, 0),
+  and the four poses (R, t) it gives back (t up to scale), of which only one puts the selected point in front of both
+  cameras (the true one); F's singular values (rank 2).
 - **Presets**: a converging pair; a rectified stereo pair (same orientation, side by side: the epipolar lines are
   horizontal, the epipoles at infinity); forward motion (the epipole is the focus of expansion); and a wide + tele
   pair (24 mm close by, 70 mm from afar: different K₁ and K₂); and a pure rotation (one centre, the camera only turned:
@@ -42,6 +44,6 @@ epipolar lines are straight only without it.
 ## Files
 
 - `index.html` – the page.
-- `epipolar.js` – the two-view maths, the nearest points of two rays included (classic script, also loadable under node).
+- `epipolar.js` – the two-view maths, the nearest points of two rays, a 3 × 3 SVD and the decomposition of E included (classic script, also loadable under node).
 - `camera.js` – pose, projection and the scene's primitives; a copy of the one in the pinhole page.
 - `test_epipolar.js` – checks, including F against OpenCV's `cv2.findFundamentalMat`: `node epipolar/test_epipolar.js`.

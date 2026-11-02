@@ -77,6 +77,30 @@ check('forward motion: (v)', ef[1] / ef[2], 360, 1e-9);
   check('parallel rays: null', Epi.closestPoints({ C: [0, 0, 0], dir: [1, 0, 0] }, { C: [0, 1, 0], dir: [1, 0, 0] }), null, 0);
 }
 
+// the SVD, and E's structure: singular values (|t|, |t|, 0); the four poses, one with the points in front of both
+{
+  const close = (A, B) => Math.hypot(...A.flat().map((x, i) => x - B.flat()[i]));
+  const A = [[2, -1, 0.5], [0.3, 4, -2], [1, 1, 3]], { U, S, V } = Epi.svd3(A);
+  check('SVD: U diag(S) Vᵀ = A', close(Cam.mul(Cam.mul(U, [[S[0], 0, 0], [0, S[1], 0], [0, 0, S[2]]]), Cam.transpose(V)), A), 0, 1e-9);
+  check('SVD: U is a rotation', close(Cam.mul(Cam.transpose(U), U), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) + Math.abs(det3(U) - 1), 0, 1e-9);
+  check('SVD: descending', S[0] >= S[1] && S[1] >= Math.abs(S[2]), true, 0);
+  const { R, t } = Epi.relativePose(c1, c2), s = Epi.svd3(E), nt = Math.hypot(...t);
+  check('E: σ₁ = |t|', s.S[0], nt, 1e-9);
+  check('E: σ₂ = |t|', s.S[1], nt, 1e-9);
+  check('E: σ₃ = 0', s.S[2] / nt, 0, 1e-9);
+  check('E rebuilt from its SVD', close(Cam.mul(Cam.mul(s.U, [[s.S[0], 0, 0], [0, s.S[1], 0], [0, 0, s.S[2]]]), Cam.transpose(s.V)), E) / nt, 0, 1e-9);
+  const cands = Epi.decomposeEssential(E), X = [0.4, 1.5, 0.6];
+  const nrm = (c, X) => { const Xc = Cam.add(Cam.mulv(c.R, X), c.t); return [Xc[0] / Xc[2], Xc[1] / Xc[2]]; };
+  const xh1 = nrm(c1, X), xh2 = nrm(c2, X);
+  const good = cands.filter(c => { const d = Epi.depthsOf(c.R, c.t, xh1, xh2); return d && d.z1 > 0 && d.z2 > 0; });
+  check('of the four poses, one puts the point in front of both cameras', good.length, 1, 0);
+  check('it is the true R', close(good[0].R, R), 0, 1e-9);
+  check('and the true t, at unit length', close([good[0].t], [t.map(x => x / nt)]), 0, 1e-9);
+  cands.forEach((c, i) => check(`pose ${i + 1}: E = [t]× R up to scale`, close(Epi.essential(c.R, c.t).map(r => r.map(x => x * nt)), E) < 1e-9 || close(Epi.essential(c.R, c.t).map(r => r.map(x => -x * nt)), E) < 1e-9, true, 0));
+  const sf = Epi.svd3(F);
+  check('F has rank 2: its smallest singular value is 0', sf.S[2] / sf.S[0], 0, 1e-9);
+}
+
 // clipping a line to the picture
 const seg = Epi.clipLine([0, 1, -100], 0, 0, 640, 480);
 check('clip a horizontal line: from u = 0', seg[0][0] + seg[1][0], 640, 1e-12);

@@ -30,7 +30,7 @@
   details.picBox[open] summary { margin-bottom: 2px; }
   .picHead .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   canvas.pic { display: block; touch-action: none; margin: 0 auto 6px; cursor: crosshair; }
-  .caption { color: #9aa0a8; font-size: 12px; margin: 2px 0 8px; }
+  .caption { color: #9aa0a8; font-size: 13px; margin: 2px 0 8px; }
   .caption .ln { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: 3px; margin-right: 4px; }
   .caption .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
   details { background: #24272c; border: 1px solid #383c43; border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 8px; }
@@ -39,11 +39,17 @@
   .eq { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
   .mat { display: inline-grid; gap: 1px 14px; padding: 2px 8px; border-left: 1.5px solid #9aa0a8; border-right: 1.5px solid #9aa0a8;
          border-radius: 5px; font-variant-numeric: tabular-nums; text-align: right; font-family: ui-monospace, monospace; font-size: 12px; }
-  .note { color: #9aa0a8; font-size: 12px; margin: 4px 0; }
+  /* the maths panel's prose a size up from the page's: its inline sub- and superscripts stay legible (the matrices keep 12 px) */
+  #math { font-size: 14px; }
+  .note { color: #9aa0a8; font-size: 14px; line-height: 1.55; margin: 4px 0; }
   .warn { color: #ffb347; }
   .num { font-variant-numeric: tabular-nums; }
   table.steps { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   table.steps td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid #33363c; }
+  table.cands { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; margin-top: 4px; }
+  table.cands th { text-align: left; font-weight: 600; color: #9aa0a8; padding: 2px 6px 2px 0; }
+  table.cands td { padding: 3px 6px 3px 0; border-top: 1px solid #33363c; vertical-align: top; }
+  table.cands tr.ok td { color: #8fe3a0; }
   table.steps td:first-child { color: #9aa0a8; }
   table.steps td:last-child { font-family: ui-monospace, monospace; font-size: 12px; text-align: right; white-space: nowrap; }
   i.v { font-family: Georgia, serif; }
@@ -672,6 +678,25 @@ camGroups.forEach((g, k) => {
 });
 const eLabels = [label('e₁', COL.epipole), label('e₂', COL.epipole)];
 eLabels.forEach(l => world.add(l));
+// the baseline's length, over its middle: a wider label, its text redrawn as the cameras move
+const baseLabel = (() => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 64;
+  const tex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, sizeAttenuation: false, depthWrite: false }));
+  sp.scale.set(0.02 * 5, 0.02, 1); sp.renderOrder = 20;
+  let shown = null;
+  sp.userData.setText = text => {
+    if (text === shown) return;
+    shown = text;
+    const g = c.getContext('2d'); g.clearRect(0, 0, c.width, c.height);
+    g.font = 'bold 36px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineWidth = 8; g.strokeStyle = 'rgba(28, 30, 34, 0.9)'; g.strokeText(text, 160, 34);   // a dark halo
+    g.fillStyle = COL.baseline; g.fillText(text, 160, 34);
+    tex.needsUpdate = true;
+  };
+  world.add(sp);
+  return sp;
+})();
 
 const planeDist = k => P.planeScale * cams[k].focal / 1000;   // metres: camera k's image plane at f, the camera drawn enlarged
 function rebuild3D(sel) {
@@ -728,6 +753,12 @@ function rebuild3D(sel) {
     if (ep.length) dyn.add(points(ep, pointMat(COL.epipole, 9, true), 29));   // on the image planes: after them
   }
   ePts.forEach((p, k) => { eLabels[k].visible = !!p; if (p) eLabels[k].position.set(p[0], p[1], p[2] + 0.18); });
+  baseLabel.visible = geo.baseline > 1e-6;
+  if (baseLabel.visible) {
+    const mid = Cam.scale(Cam.add(cams[0].C, cams[1].C), 0.5);
+    baseLabel.position.set(mid[0], mid[1], mid[2] - 0.22);   // below the line: the epipoles, often on it, are labelled above
+    baseLabel.userData.setText(`baseline ${geo.baseline.toFixed(2)} m`);
+  }
 
   // the epipolar lines on the image planes, from the epipole (whenever its dot is drawn: within 60 m in the scene, as a
   // cut-off in pixels would move with the focal length) across the picture: they all meet there. The selection's
@@ -1036,6 +1067,39 @@ function epipoleTxt(k) {
   const n = Math.hypot(e[0], e[1]);
   return `at infinity, direction ${vec([e[0] / n, e[1] / n], 3)}`;
 }
+// a rotation as its angle about its axis
+function axisAngle(R) {
+  const c = Math.max(-1, Math.min(1, (R[0][0] + R[1][1] + R[2][2] - 1) / 2)), a = [R[2][1] - R[1][2], R[0][2] - R[2][0], R[1][0] - R[0][1]];
+  let n = Math.hypot(...a), axis = a;
+  if (n < 1e-6 && c < 0) {
+    // a half turn: no skew part; the axis is any non-zero column of R + I
+    const cols = [0, 1, 2].map(j => [0, 1, 2].map(i => R[i][j] + (i === j ? 1 : 0)));
+    axis = cols.reduce((p, q) => Math.hypot(...q) > Math.hypot(...p) ? q : p); n = Math.hypot(...axis);
+  }
+  return `${fx1(Math.acos(c) * 180 / Math.PI, 1)}°` + (n > 1e-9 ? ` about ${vec(axis.map(x => x / n), 2)}` : '');
+}
+// E's structure: its singular values (|t|, |t|, 0), and the four poses it allows, told apart by a point that must lie
+// in front of both cameras (the selection's, or the middle of the scene)
+function essentialStructure(sel) {
+  const { E, R, t, baseline } = geo, { S } = Epi.svd3(E);
+  const X = !sel ? SCENE_CENTRE : sel.kind === 'vertex' ? sel.X : sel.probe.X;
+  const xh = cams.map(c => { const Xc = Cam.add(Cam.mulv(c.R, X), c.t); return Xc[2] > 1e-9 ? [Xc[0] / Xc[2], Xc[1] / Xc[2]] : null; });
+  const tu = t.map(x => x / baseline), close = (A, B) => Math.hypot(...A.flat().map((x, i) => x - B.flat()[i])) < 1e-6;
+  const rows = Epi.decomposeEssential(E).map((c, i) => {
+    const d = xh[0] && xh[1] && Epi.depthsOf(c.R, c.t, xh[0], xh[1]);
+    const verdict = !d ? '—' : d.z1 > 0 && d.z2 > 0 ? 'in front of both ✓' : d.z1 > 0 ? 'behind camera 2' : d.z2 > 0 ? 'behind camera 1' : 'behind both';
+    const truth = close(c.R, R) && close([c.t], [tu]);
+    return `<tr class="${d && d.z1 > 0 && d.z2 > 0 ? 'ok' : ''}"><td>${i + 1}</td><td>${axisAngle(c.R)}</td><td>${vec(c.t, 2)}</td>
+      <td>${d ? `${fmt(d.z1 * baseline, 3)}, ${fmt(d.z2 * baseline, 3)}` : '—'}</td><td>${verdict}${truth ? ' (the true pose)' : ''}</td></tr>`;
+  });
+  const what = !sel ? 'the middle of the scene' : sel.kind === 'vertex' || !sel.match && sel.vertex && P.probe == null ? 'the selected vertex' : 'the probe';
+  return `<div class="note num">Singular values of E: ${vec(S.map(Math.abs), 3)}: two equal, to the baseline |t| = ${fmt(baseline, 3)} m,
+      and one 0. Any 3 × 3 matrix like that is an essential matrix, and it gives the pose back, up to the scale of t:
+      with E = U diag(σ, σ, 0) Vᵀ, R = U W Vᵀ or U Wᵀ Vᵀ (W a quarter turn about z) and t = ±u₃, the last column of U.
+      Of the four, only one puts a scene point in front of both cameras; here tested with ${what}:</div>
+    <table class="cands"><tr><th></th><th>R</th><th>t (unit)</th><th>Z₁, Z₂ (m)</th><th>the point</th></tr>${rows.join('')}</table>
+    ${xh[0] && xh[1] ? '' : '<div class="note warn">The test point is behind a camera: none of the four can be told apart with it.</div>'}`;
+}
 function updateMath(sel) {
   const el = document.getElementById('math');
   el.querySelectorAll('details').forEach(d => { openState[d.dataset.id] = d.open; });
@@ -1053,12 +1117,13 @@ function updateMath(sel) {
   html += section('E', 'Essential matrix E = [t]× R', `
     <div class="eq"><i class="v">E</i> = ${matrix(E, x => fmt(x, 3))}</div>
     <div class="note">x̂₂ᵀ <i class="v">E</i> x̂₁ = 0 for the normalised coordinates x̂ = <i class="v">K</i>⁻¹ x of any scene point's two
-      images: the vectors from <i class="v">C</i>₁ and <i class="v">C</i>₂ to the point and the baseline <i class="v">t</i> lie in one plane, the epipolar plane.</div>`);
+      images: the vectors from <i class="v">C</i>₁ and <i class="v">C</i>₂ to the point and the baseline <i class="v">t</i> lie in one plane, the epipolar plane.</div>
+    ${baseline < 1e-6 ? '' : essentialStructure(sel)}`);
   html += section('F', 'Fundamental matrix F = K₂⁻ᵀ E K₁⁻¹', `
     <div class="eq"><i class="v">F</i> = ${matrix(baseline < 1e-6 ? F.map(r => r.map(() => 0)) : unitNorm(F), x => fmt(x, 3))}</div>
     <div class="note">(scaled to unit norm; F is only defined up to scale.) x₂ᵀ <i class="v">F</i> x₁ = 0 for pixels; the epipolar
       line of x₁ in picture 2 is l₂ = <i class="v">F</i> x₁, of x₂ in picture 1 l₁ = <i class="v">F</i>ᵀ x₂. F has rank 2: all
-      epipolar lines of a picture pass through its epipole.</div>
+      epipolar lines of a picture pass through its epipole.${baseline < 1e-6 ? '' : ` Its singular values (at unit norm) (${Epi.svd3(unitNorm(F)).S.map(x => fmt(Math.abs(x) < 1e-9 ? 0 : Math.abs(x), 3)).join(', ')}): the last one 0, as for E (F = K₂⁻ᵀ E K₁⁻¹ keeps the rank, not the two equal values).`}</div>
     ${baseline < 1e-6 ? '<div class="note warn">With no baseline E and F are zero (to rounding): there are no epipoles and no epipolar lines.</div>' : `<table class="steps">
       <tr><td>epipole e₁ (the image of C₂ in camera 1; F e₁ = 0)</td><td>${epipoleTxt(0)}</td></tr>
       <tr><td>epipole e₂ (the image of C₁ in camera 2; Fᵀ e₂ = 0)</td><td>${epipoleTxt(1)}</td></tr>

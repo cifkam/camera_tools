@@ -77,8 +77,63 @@
     return { d1, d2, P1, P2, gap: Math.hypot(...sub(P1, P2)) };
   }
 
+  // the singular value decomposition of a 3 × 3 matrix, A = U diag(S) Vᵀ, S descending, U and V rotations (det +1; the
+  // sign goes to S[2] when det A < 0). V from the eigenvectors of AᵀA (cyclic Jacobi), U from A V, its last column
+  // completed by a cross product when A is singular.
+  function svd3(A) {
+    const M = mul(transpose(A), A).map(r => r.slice());
+    let V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    for (let sweep = 0; sweep < 50; sweep++) {
+      const off = M[0][1] ** 2 + M[0][2] ** 2 + M[1][2] ** 2;
+      if (off < 1e-30 * (M[0][0] ** 2 + M[1][1] ** 2 + M[2][2] ** 2 + 1e-300)) break;
+      for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+        if (Math.abs(M[p][q]) < 1e-300) continue;
+        const th = (M[q][q] - M[p][p]) / (2 * M[p][q]);
+        const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1)), c = 1 / Math.sqrt(t * t + 1), s = t * c;
+        for (let k = 0; k < 3; k++) {   // M ← Jᵀ M J, V ← V J
+          const a = M[k][p], b = M[k][q]; M[k][p] = c * a - s * b; M[k][q] = s * a + c * b;
+        }
+        for (let k = 0; k < 3; k++) {
+          const a = M[p][k], b = M[q][k]; M[p][k] = c * a - s * b; M[q][k] = s * a + c * b;
+        }
+        for (let k = 0; k < 3; k++) {
+          const a = V[k][p], b = V[k][q]; V[k][p] = c * a - s * b; V[k][q] = s * a + c * b;
+        }
+      }
+    }
+    const order = [0, 1, 2].sort((i, j) => M[j][j] - M[i][i]);
+    let Vc = order.map(i => V.map(r => r[i]));   // columns of V, by descending eigenvalue
+    if (dot(cross(Vc[0], Vc[1]), Vc[2]) < 0) Vc[2] = Vc[2].map(x => -x);
+    const S = order.map(i => Math.sqrt(Math.max(0, M[i][i])));
+    const Uc = Vc.map((v, i) => { const u = mulv(A, v), n = Math.hypot(...u); return n > 1e-12 * (S[0] || 1) ? u.map(x => x / n) : null; });
+    Uc[0] = Uc[0] || [1, 0, 0];
+    if (!Uc[1]) { const a = Math.abs(Uc[0][0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], c = cross(Uc[0], a), n = Math.hypot(...c); Uc[1] = c.map(x => x / n); }
+    const u3 = cross(Uc[0], Uc[1]);
+    if (Uc[2] && dot(Uc[2], u3) < 0) S[2] = -S[2];   // det A < 0: the sign on the smallest singular value
+    Uc[2] = u3;
+    return { U: transpose(Uc), S, V: transpose(Vc) };
+  }
+
+  // the four (R, t) an essential matrix allows (t of unit length: the scale is lost): R = U W Vᵀ or U Wᵀ Vᵀ, t = ±u₃
+  function decomposeEssential(E) {
+    const { U, V } = svd3(E), W = [[0, -1, 0], [1, 0, 0], [0, 0, 1]], Vt = transpose(V);
+    const Ra = mul(mul(U, W), Vt), Rb = mul(mul(U, transpose(W)), Vt), u3 = U.map(r => r[2]);
+    return [[Ra, u3], [Ra, u3.map(x => -x)], [Rb, u3], [Rb, u3.map(x => -x)]].map(([R, t]) => ({ R, t }));
+  }
+
+  // the depths (Z in each camera) of the point seen at the normalised coordinates x̂₁, x̂₂ ([x, y], z = 1), triangulated
+  // with camera 2 at X₂ = R X₁ + t: both positive for the one (R, t) of the four that puts it in front of both cameras
+  function depthsOf(R, t, xh1, xh2) {
+    const C2 = mulv(transpose(R), t.map(x => -x)), d2 = mulv(transpose(R), [xh2[0], xh2[1], 1]);
+    const cp = closestPoints({ C: [0, 0, 0], dir: [xh1[0], xh1[1], 1].map(x => x / Math.hypot(xh1[0], xh1[1], 1)) },
+      { C: C2, dir: d2.map(x => x / Math.hypot(...d2)) });
+    if (!cp) return null;
+    const P = cp.P1;
+    return { z1: P[2], z2: mulv(R, P)[2] + t[2] };
+  }
+
   const Epi = { skew, invK, relativePose, essential, fundamental, centreOf, epipole, lineInImage1, lineInImage2,
-    pointLineDistance, residual, clipLine, pixelRay, closestPoints, cross, dot };
+    pointLineDistance, residual, clipLine, pixelRay, closestPoints, svd3, decomposeEssential, depthsOf, cross, dot };
   root.Epi = Epi;
   if (typeof module !== 'undefined' && module.exports) module.exports = Epi;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
