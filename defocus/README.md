@@ -23,6 +23,10 @@ sensor, so their circles grow with the distance from the focus and with the aper
   inside is millimetres next to a scene in metres, so it is drawn enlarged (×20 by default).
 - **Image view**: the picture with every line as wide as its blur circle (and fainter, as its light spreads), each
   vertex as its blur circle (a solid dot when within the acceptable blur), and the checkerboard's squares blurred.
+  A magnifier (the button on the picture, ×4, ×8 or ×16) follows the pointer, or goes where the picture is pressed:
+  everything at its true size there, the blur within the acceptable blur included, the sensor's pixels once they
+  show, and the acceptable blur dashed around its middle for comparison; it is how diffraction, a pixel or two at
+  normal apertures, can be seen.
 - **Presets**: a long lens on 8×10″ from afar (shallow depth of field, the objects' sharp images spread some 34 mm
   apart behind the lens) against a 24 mm on full frame up close (deep depth of field, the images within half a
   millimetre), the standard 50 mm f/1.4, and a 4×5″ view camera with the lens tilted to bring the ground into focus.
@@ -46,6 +50,10 @@ sensor, so their circles grow with the distance from the focus and with the aper
 - The circle of confusion c (acceptable blur) is set directly; picking a format or a preset sets it to the
   format's diagonal / 1500 (0.029 mm on full frame, 0.1 mm on 4×5″). Depth of field for it: H = f² / (N c) + f,
   near = s (H − f) / (H + s − 2f), far = s (H − f) / (H − s) (infinite once s ≥ H).
+- Diffraction (a checkbox under the circle of confusion): the Airy disc, d = 2.44 λ D / A with λ = 550 nm (D / A
+  the working f-number; N / 745 mm focused at infinity), added to every point's blur as √(c_defocus² + d²) (each
+  point of an ellipse's outline pushed out likewise; an in-focus point becomes the disc). It leaves √(c² − d²) of the
+  acceptable blur to the defocus, which then sets the depth of field; once d reaches c there is none.
 - Focusing moves the sensor, so the pixel scale is v, not f: the picture grows slightly when focused closer.
 - View camera: the camera frame of the projection is the sensor's own, centred on the lens centre L, so the picture
   is the pinhole projection K [R | t] from L with R the sensor's orientation and the principal point where the
