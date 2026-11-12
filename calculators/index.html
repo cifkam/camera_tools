@@ -124,6 +124,7 @@ const S = {
   cocMode: 'print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
   focus: 3,           // m, used by the DoF tools
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
+  dmTotal: true, dmDefocus: false, dmDiff: false,   // the DoF tool's blur map: which blurs get lines of equal value
   spreadMode: 'spread', spreadDelta: 4, railNear: 54, railFar: 50, spreadFocus: 5, spreadPos: 50, mapTotal: true, mapDefocus: false, mapDiff: false,   // focus spread tool (mm; spreadFocus: the standard's focus, m; spreadPos: % of the way from the near to the far focus)
   targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
   film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1, rcLog: true, rcMax: 60,   // reciprocity tool (times in s; rcMax = span of the chart's metered axis)
@@ -319,6 +320,10 @@ tools.dof = {
       h('p', { class: 'note' }, 'Logarithmic distance axis with ∞ after the break. H marks the hyperfocal distance; focused there, the sharp range runs from H/2 to ∞.')));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Near and far limits vs focus distance'), h('div', { id: 'dofCurves' }),
       h('p', { class: 'note' }, 'One pair of curves per aperture, the current aperture highlighted. Curves leaving through the top edge continue beyond the axis range or go to infinity.')));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Blur vs distance and aperture, diffraction included'), h('div', { id: 'dofMap' }),
+      h('div', { class: 'inline-fields' },   // which blur to draw lines of equal value for
+        checkField({ label: 'total', key: 'dmTotal' }), checkField({ label: 'defocus', key: 'dmDefocus' }), checkField({ label: 'diffraction', key: 'dmDiff' })),
+      h('p', { class: 'note', id: 'dofMapLegend' })));
   },
   update() {
     const f = S.focal, N = S.fnumber, c = cocInfo().coc, s = S.focus * 1000;
@@ -331,6 +336,16 @@ tools.dof = {
       stat('hyperfocal distance', fmtDist(m2(r.H))), stat('magnification', Number.isFinite(r.mag) ? '1:' + (1 / r.mag).toFixed(r.mag > 0.2 ? 1 : 0) : '–'));
     drawDofBar(document.getElementById('dofBar'), r);
     drawDofCurves(document.getElementById('dofCurves'), f, c);
+    const m = drawDofMap(document.getElementById('dofMap'), f, N, c, s);
+    const lim = m.limits;   // where the blur at f/N reaches the CoC, diffraction included
+    document.getElementById('dofMapLegend').replaceChildren(...colorLegend([
+      [`Blur on film of a point at each distance, the lens focused at ${fmtDist(S.focus)}: defocus, the cone cut by the film, f² |x − s| / (N x (s − f)), and diffraction, N / 750 mm, combined as √(a² + b²). Lines of equal blur in mm: `,
+       ['#4fe07a', 'green'], ' total, ', ['#ff6b6b', 'red'], ' defocus alone, ', ['#5b7cff', 'blue'], ` diffraction alone; the thick one of each at your CoC, ${fmt(c, 3)} mm.`],
+      [['#4fe07a', 'Shaded green'], `: within the CoC, the depth of field with diffraction. At the focus only diffraction blurs: beyond ${fNum(m.diffLimit)} nothing is sharp, however near the focus. `,
+       ...(S.dmTotal ? [['#4fe07a', 'Dashed green'], ': the f-number that blurs each distance least.'] : [])],
+      [['#f2f3f5', 'White'], lim ? `: f/${N}, sharp from ${fmtDist(lim[0] / 1000)} to ${fmtDist(lim[1] / 1000)} (without diffraction ${fmtDist(r.near / 1000)} to ${fmtDist(r.far / 1000)}). ` : `: f/${N}, where nothing is within the CoC. `,
+       'Drag to change the focus distance (across) and the f-number (up and down).'],
+    ]));
   },
 };
 
@@ -423,6 +438,154 @@ function drawDofCurves(container, f, c) {
   makeDraggable(container, x => setFocus(Sinv(Math.min(x1, Math.max(x0, x)))));
 }
 
+// The blur on film of a point at distance x with the lens focused at s, against x (the DoF charts' axis) and the
+// f-number. Defocus is A(x) / N with A = f² |x − s| / (x (s − f)), diffraction kN (k = 1/750 mm), the total
+// √((A/N)² + (kN)²). A line of equal total blur b is a dome over the focus: N² = (b² ± √(b⁴ − 4k²A²)) / 2k², the
+// upper branch where diffraction decides, the lower where defocus does, meeting where A = b² / 2k; its top, at the
+// focus (A = 0), is N = b / k. The f-number blurring a distance least is N = √(A / k).
+function drawDofMap(container, f, N, c, s) {
+  const kd = O.DIFFRACTION_PER_N;
+  if (!(s > f * 1.001)) { container.replaceChildren(); return { limits: null, diffLimit: c / kd }; }   // focused inside the focal length: no image
+  const W = chartWidth(container), Hh = Math.round(Math.min(460, Math.max(300, W * 0.58)));
+  const x0 = 40, x1 = W - 14, y0 = 32, y1 = Hh - 40, xMin = S.chartMin * 1000, xMax = S.chartMax * 1000;   // mm
+  const nMin = spreadNMin(c), nMax = c < 0.05 ? 64 : 128;
+  const Xr = x => x0 + (x1 - x0) * Math.log(Math.max(1e-9, x) / xMin) / Math.log(xMax / xMin);   // unclamped: the plot is clipped
+  const Xinv = px => xMin * Math.exp((Math.min(x1, Math.max(x0, px)) - x0) / (x1 - x0) * Math.log(xMax / xMin));
+  const Y = n => y1 - (y1 - y0) * Math.log(Math.max(1e-9, n) / nMin) / Math.log(nMax / nMin);
+  const Ninv = y => nMin * Math.exp((y1 - Math.min(y1, Math.max(y0, y))) / (y1 - y0) * Math.log(nMax / nMin));
+  const g = f * f / (s - f);   // A = g |x − s| / x; on the far side it tends to g
+  const A = x => g * Math.abs(x - s) / x;
+  const xAt = (a, side) => side < 0 ? s / (1 + a / g) : a < g ? s / (1 - a / g) : Infinity;   // A's inverse, each side
+  const far = xMax * 100;   // ∞ for the paths: well off the plot's right edge
+  const P = (x, n) => `${Xr(Math.min(far, x)).toFixed(1)},${Y(n).toFixed(1)}`;
+  // the allowed f-numbers at x for each blur within b: [lo, hi] or null
+  const allowed = {
+    total: (b, x) => { const a = A(x), disc = b ** 4 - 4 * kd * kd * a * a; if (disc < 0) return null;
+      return [Math.sqrt((b * b - Math.sqrt(disc)) / (2 * kd * kd)), Math.sqrt((b * b + Math.sqrt(disc)) / (2 * kd * kd))]; },
+    defocus: (b, x) => [A(x) / b, Infinity],
+    diffraction: b => [0, b / kd],
+  };
+  const COLOR = { total: SP_TOTAL, defocus: SP_DEFOCUS, diffraction: SP_DIFF };
+  const on = ['total', 'defocus', 'diffraction'].filter(k => S[{ total: 'dmTotal', defocus: 'dmDefocus', diffraction: 'dmDiff' }[k]]);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  const clipId = 'dofMap' + Math.random().toString(36).slice(2, 7), defs = svgEl('defs', {}), clip = svgEl('clipPath', { id: clipId });
+  clip.append(svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })); defs.append(clip); svg.append(defs);
+  const gridLayer = svgEl('g', {}); svg.append(gridLayer);
+  const plot = svgEl('g', { 'clip-path': `url(#${clipId})` }); svg.append(plot);
+  // shaded green where every blur shown stays within the CoC: per distance, the f-numbers all of them allow (the
+  // distances where the total's dome closes added, so its ends are not cut off)
+  if (on.length) {
+    const xs = [];
+    for (let i = 0; i <= 400; i++) xs.push(xMin * Math.pow(xMax / xMin, i / 400));
+    const aTop = c * c / (2 * kd);
+    for (const side of [-1, 1]) { const x = xAt(aTop * (1 - 1e-9), side); if (x > xMin && x < xMax) xs.push(x); }
+    xs.push(s); xs.sort((a, b) => a - b);
+    const upper = [], lower = [];
+    for (const x of xs) {
+      let lo = 0, hi = Infinity, none = false;
+      for (const k of on) { const r = allowed[k](c, x); if (!r) { none = true; break; } lo = Math.max(lo, r[0]); hi = Math.min(hi, r[1]); }
+      if (none || lo > hi) { if (upper.length) break; continue; }   // the region is one stretch of distances, around the focus
+      upper.push(P(x, Math.min(nMax * 2, hi))); lower.push(P(x, Math.max(nMin / 2, lo)));
+    }
+    if (upper.length) plot.append(svgEl('path', { d: `M${upper.join(' L')} L${lower.reverse().join(' L')} Z`, fill: SP_TOTAL, opacity: .12 }));
+  }
+  // grid: the marked stops up, the distances across
+  const stops = SP_STOPS.filter(n => n >= nMin && n <= nMax), every = (y1 - y0) / (stops.length - 1) >= 18 ? 1 : 2;
+  stops.forEach((n, i) => { gridLayer.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), class: 'grid' }));
+    if (i % every === 0) svg.append(svgEl('text', { x: x0 - 4, y: Y(n) + 4, 'text-anchor': 'end' }, String(n))); });
+  for (const d of logTicks(S.chartMin, S.chartMax, Math.floor((x1 - x0) / 36))) {
+    gridLayer.append(svgEl('line', { x1: Xr(d * 1000), x2: Xr(d * 1000), y1: y0, y2: y1, class: 'grid' }));
+    svg.append(svgEl('text', { x: Xr(d * 1000), y: y1 + 14, 'text-anchor': 'middle' }, tickLabel(d)));
+  }
+  svg.append(svgEl('text', { x: x0 + 4, y: y0 - 8 }, 'f-number'));
+  svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'subject distance (m)'));
+  // the focus
+  const xs0 = Xr(s);
+  plot.append(svgEl('line', { x1: xs0, x2: xs0, y1: y0, y2: y1, stroke: '#4fe07a', 'stroke-width': 1, 'stroke-dasharray': '2 3', opacity: .8 }));
+  // the lines of equal blur: thin for the levels, thick at the CoC
+  const levels = [0.002, 0.003, 0.005, 0.007, 0.01, 0.015, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.5]
+    .filter(b => b > c / 4 && b < c * 3 && Math.abs(b / c - 1) > 0.08);
+  const label = (x, y, b, color, anchor = 'start') => svg.append(svgEl('text', { x, y, 'text-anchor': anchor, fill: color, class: 'ptlabel' }, +b.toFixed(3) + ''));
+  const iso = (k, b, current) => {
+    const color = COLOR[k], width = current ? 2.2 : 1, opacity = current ? 1 : 0.55;
+    if (k === 'diffraction') {   // a horizontal line at N = b / k
+      const n = b / kd; if (n < nMin || n > nMax) return;
+      plot.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), stroke: color, 'stroke-width': width, opacity }));
+      if (Y(n) > y0 + 14) label(x0 + 4, Y(n) - 4, b, color); return;
+    }
+    if (k === 'defocus') {   // N = A / b on each side, rising away from the focus
+      for (const side of [-1, 1]) {
+        const pts = [];
+        for (let i = 0; i <= 160; i++) {
+          const t = i / 160, x = side < 0 ? xMin * Math.pow(s / xMin, t) : s * Math.pow(xMax / s, t);
+          if (side < 0 && x >= s || side > 0 && x <= s) continue;
+          pts.push(P(x, Math.max(nMin / 4, A(x) / b)));
+        }
+        if (pts.length > 1) plot.append(svgEl('path', { d: 'M' + pts.join(' L'), fill: 'none', stroke: color, 'stroke-width': width, opacity }));
+      }
+      const nl = A(xMax) / b;   // named where it leaves through the right edge
+      if (nl > nMin && nl < nMax) label(x1 - 3, Y(nl) - 4, b, color, 'end');
+      return;
+    }
+    // the total's dome: the upper branch from the near end over the focus to the far end, back along the lower one
+    const aTop = b * b / (2 * kd), aCap = Math.min(aTop, g * (1 - 1e-9));
+    const branch = (a, sign) => Math.sqrt(Math.max(0, (b * b + sign * Math.sqrt(Math.max(0, b ** 4 - 4 * kd * kd * a * a))) / (2 * kd * kd)));
+    const up = [], down = [], n = 120;
+    for (let i = 0; i <= n; i++) {   // denser at both ends: at the focus and where the branches meet
+      const u = (1 - Math.cos(Math.PI * i / n)) / 2;
+      up.push(P(xAt(aTop * (1 - u), -1), branch(aTop * (1 - u), 1)));
+      down.unshift(P(xAt(aTop * (1 - u), -1), Math.max(nMin / 4, branch(aTop * (1 - u), -1))));
+    }
+    const upFar = [], downFar = [];
+    for (let i = 0; i <= n; i++) {
+      const a = aCap * (1 - Math.cos(Math.PI * i / n)) / 2;
+      upFar.push(P(xAt(a, 1), branch(a, 1))); downFar.unshift(P(xAt(a, 1), Math.max(nMin / 4, branch(a, -1))));
+    }
+    plot.append(svgEl('path', { d: 'M' + [...up, ...upFar, ...downFar, ...down].join(' L') + ' Z', fill: 'none', stroke: color, 'stroke-width': width, opacity }));
+    const nt = b / kd;   // named at its top, left of the focus (your point is named on its right)
+    if (nt > nMin && nt < nMax && Y(nt) > y0 + 10) label(xs0 - 4, Y(nt) - 4, b, color, 'end');
+  };
+  for (const k of on) for (const b of levels) iso(k, b, false);
+  for (const k of on) iso(k, c, true);
+  if (S.dmTotal) {   // the least blurring f-number per distance: N = √(A / k)
+    for (const side of [-1, 1]) {
+      const pts = [];
+      for (let i = 1; i <= 160; i++) {
+        const t = i / 160, x = side < 0 ? s * Math.pow(xMin / s, t) : s * Math.pow(xMax / s, t);
+        pts.push(P(x, Math.sqrt(A(x) / kd)));
+      }
+      plot.append(svgEl('path', { d: 'M' + pts.join(' L'), fill: 'none', stroke: SP_TOTAL, 'stroke-width': 1.5, 'stroke-dasharray': '6 4' }));
+    }
+  }
+  // you: the f-number across, the limits where its total blur reaches the CoC
+  const a2 = c * c - (kd * N) ** 2, aLim = a2 > 0 ? N * Math.sqrt(a2) : -1;
+  const limits = aLim >= 0 ? [xAt(aLim, -1), xAt(aLim, 1)] : null;
+  const yN = Y(Math.min(nMax, Math.max(nMin, N)));
+  plot.append(svgEl('line', { x1: x0, x2: x1, y1: yN, y2: yN, stroke: SP_SET, 'stroke-width': 1.2, opacity: .7 }));
+  if (limits) {
+    const [xa, xb] = [Xr(limits[0]), Xr(Math.min(far, limits[1]))];
+    plot.append(svgEl('line', { x1: xa, x2: Math.min(x1, xb), y1: yN, y2: yN, stroke: SP_SET, 'stroke-width': 3 }));
+    for (const x of [xa, xb]) if (x >= x0 && x <= x1) plot.append(svgEl('circle', { cx: x, cy: yN, r: 4, fill: SP_SET }));
+    // their distances, below the line: the near one to the left of its end, the far one to the right (at the edge,
+    // with an arrow, when it lies beyond the axis)
+    const below = yN + 17 > y1 - 2 ? yN - 9 : yN + 17;
+    if (xa >= x0 && xa <= x1) svg.append(svgEl('text', { x: Math.max(x0 + 2, xa - 2), y: below, 'text-anchor': xa - x0 > 60 ? 'end' : 'start', fill: SP_SET, class: 'ptlabel' }, fmtDist(limits[0] / 1000)));
+    const farText = limits[1] === Infinity ? '∞' : fmtDist(limits[1] / 1000);
+    if (xb <= x1) svg.append(svgEl('text', { x: Math.min(x1 - 2, xb + 2), y: below, 'text-anchor': x1 - xb > 60 ? 'start' : 'end', fill: SP_SET, class: 'ptlabel' }, farText));
+    else svg.append(svgEl('text', { x: x1 - 2, y: below, 'text-anchor': 'end', fill: SP_SET, class: 'ptlabel' }, farText + ' →'));
+  }
+  svg.append(svgEl('circle', { cx: xs0, cy: yN, r: 5, fill: SP_SET }));
+  pointLabel(svg, xs0, yN, `${fmtDist(S.focus)}, f/${N}`, SP_SET, [x0, x1, y0]);
+  container.replaceChildren(svg);
+  // drag: across for the focus distance, up and down for the f-number (snapped to the marked stops)
+  makeDraggable(container, (x, y) => {
+    const n = stopNearest(Ninv(y));
+    if (n !== S.fnumber) { S.fnumber = n; renderShared(); }
+    setFocus(Xinv(x) / 1000);
+  });
+  return { limits, diffLimit: c / kd };
+}
+
 function setFocus(m) {
   const v = Math.min(1000, Math.max(0.2, +m.toFixed(2)));
   if (fields.focus) fields.focus.set(v); else S.focus = v;
@@ -481,6 +644,13 @@ tools.table = {
 // Tool: focus spread (view cameras)
 // ---------------------------------------------------------------------------
 const spreadDelta = () => S.spreadMode === 'readings' ? Math.abs(S.railNear - S.railFar) : S.spreadDelta;
+// The spread: 0.05–40 mm, to 0.01 mm below 1 mm (small formats, whose CoC is small, need spreads of a few tenths) and
+// to 0.1 mm above
+const SPREAD_MIN = 0.05, SPREAD_MAX = 40;
+const roundSpread = v => Math.min(SPREAD_MAX, Math.max(SPREAD_MIN, v < 1 ? Math.round(v * 100) / 100 : Math.round(v * 10) / 10));
+// the widest f-number the spread charts show: f/1.4 for a small CoC (small formats), else f/4
+const spreadNMin = c => c < 0.05 ? 1.4 : 4;
+const SP_STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128];
 const fNum = N => !Number.isFinite(N) ? '–' : 'f/' + N.toFixed(1);   // a computed f-number: one decimal, so the values agree with each other and with the marked stops they round to
 // rounded to the marked stops, half stops included
 const stopAtLeast = N => O.APERTURES_HALF.find(a => a >= N * 0.999);            // the widest marked stop not wider than N
@@ -497,7 +667,7 @@ tools.spread = {
     if (S.spreadMode === 'readings') card.append(   // half-millimetre steps, as a rail scale is read
       numField({ label: 'rail reading, focused on the nearest point', key: 'railNear', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }),
       numField({ label: 'rail reading, focused on the farthest point', key: 'railFar', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }));
-    else card.append(numField({ label: 'focus spread Δ', key: 'spreadDelta', min: 0.5, max: 40, step: 0.5, unit: 'mm', log: true, decimals: 1 }));
+    else card.append(numField({ label: 'focus spread Δ', key: 'spreadDelta', min: SPREAD_MIN, max: SPREAD_MAX, step: 0.01, unit: 'mm', log: true, decimals: 2 }));
     card.append(numField({ label: 'standard position, from the near focus (0 %) to the far one (100 %)', key: 'spreadPos', min: 0, max: 100, step: 1, unit: '%' }));   // left to right, as in the picture
     card.append(numField({ label: 'standard focused at (picture below)', key: 'spreadFocus', min: 0.3, max: 1000, step: 0.01, unit: 'm', log: true, decimals: 2 }));
     card.append(h('p', { class: 'note' }, 'Focus on the nearest and on the farthest point that must be sharp, and note where the standard sits each time: the spread is the travel between the two. It holds for any lens, format or tilt; only the circle of confusion from the side panel enters.'));
@@ -714,9 +884,9 @@ function drawSpreadScene(container, d, c, N, t, r) {
       const pos = Math.round((1 - Math.min(1, Math.max(0, (Vinv(x) - gr.vFar) / d))) * 100);
       setKey('spreadPos', pos); setFocus(focusOf(gr.vFar + (1 - pos / 100) * d), false);
     } else if (hd === 'near' || hd === 'far') {
-      const vFar = hd === 'far' ? Math.max(f, Math.min(gr.vNear - 0.5, Vinv(x))) : gr.vFar;
-      const vNear = hd === 'near' ? Math.max(gr.vFar + 0.5, Vinv(x)) : gr.vNear;
-      const dd = Math.min(40, Math.round((vNear - vFar) * 10) / 10);   // 0.5–40 mm, as the spread input
+      const vFar = hd === 'far' ? Math.max(f, Math.min(gr.vNear - SPREAD_MIN, Vinv(x))) : gr.vFar;
+      const vNear = hd === 'near' ? Math.max(gr.vFar + SPREAD_MIN, Vinv(x)) : gr.vNear;
+      const dd = roundSpread(vNear - vFar);   // as the spread input
       setSpread(dd);
       setFocus(focusOf((hd === 'near' ? vFar : vNear - dd) + t * dd), false);   // the standard keeps its share of the new spread
     } else if (hd === 'scene') setFocus(Dinv(x) * 1000, true);
@@ -742,7 +912,7 @@ function setSpreadDelta(dd) {
 function drawSpreadMap(container, c, N, d, t) {
   const k = Math.max(t, 1 - t), kd = O.DIFFRACTION_PER_N;
   const W = chartWidth(container), Hh = Math.round(Math.min(440, Math.max(300, W * 0.55)));
-  const x0 = 40, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = 4, nMax = 128, dMin = 0.5, dMax = 40;
+  const x0 = 40, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = spreadNMin(c), nMax = 128, dMin = SPREAD_MIN, dMax = SPREAD_MAX;
   // spread across, f-number up (both logarithmic)
   const Xr = v => x0 + (x1 - x0) * Math.log(Math.max(1e-6, v) / dMin) / Math.log(dMax / dMin);   // unclamped: curves leave through the edges (the plot is clipped)
   const X = v => Xr(Math.min(dMax, Math.max(dMin, v)));
@@ -774,11 +944,11 @@ function drawSpreadMap(container, c, N, d, t) {
     plot.append(svgEl('path', { d: okPath, fill: SP_TOTAL, opacity: .1 }));
   }
   // grid
-  const stops = [4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128], every = (y1 - y0) / (stops.length - 1) >= 18 ? 1 : 2;
+  const stops = SP_STOPS.filter(n => n >= nMin), every = (y1 - y0) / (stops.length - 1) >= 18 ? 1 : 2;
   stops.forEach((n, i) => { gridLayer.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), class: 'grid' }));
     if (i % every === 0) svg.append(svgEl('text', { x: x0 - 4, y: Y(n) + 4, 'text-anchor': 'end' }, String(n))); });
-  for (const v of [0.5, 1, 2, 5, 10, 20, 40]) { gridLayer.append(svgEl('line', { x1: X(v), x2: X(v), y1: y0, y2: y1, class: 'grid' }));
-    svg.append(svgEl('text', { x: X(v), y: y1 + 14, 'text-anchor': v === 40 ? 'end' : 'middle' }, String(v))); }
+  for (const v of [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 40]) { gridLayer.append(svgEl('line', { x1: X(v), x2: X(v), y1: y0, y2: y1, class: 'grid' }));
+    svg.append(svgEl('text', { x: X(v), y: y1 + 14, 'text-anchor': v === dMax ? 'end' : v === dMin ? 'start' : 'middle' }, String(v))); }
   svg.append(svgEl('text', { x: x0 + 4, y: y0 + 12 }, 'f-number'));
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'spread Δ (mm)'));
   // the isolines: thin for the blur levels, thick where the function reaches the CoC; each function in its colour
@@ -812,11 +982,11 @@ function drawSpreadMap(container, c, N, d, t) {
   // you: the spread and the side panel's f-number
   const px = X(d), py = Y(Math.min(nMax, Math.max(nMin, N)));
   svg.append(svgEl('circle', { cx: px, cy: py, r: 5, fill: SP_SET }));
-  pointLabel(svg, px, py, `${fmt(d, 1)} mm, f/${N}`, SP_SET, [x0, x1, y0]);
+  pointLabel(svg, px, py, `${fmt(d, d < 1 ? 2 : 1)} mm, f/${N}`, SP_SET, [x0, x1, y0]);
   container.replaceChildren(svg);
   // drag the point: across for the spread, up and down for the f-number (snapped to the marked stops)
   makeDraggable(container, (x, y) => {
-    const n = stopNearest(Ninv(y)), dd = Math.min(40, Math.max(0.5, Math.round(Dinv(x) * 10) / 10));
+    const n = stopNearest(Ninv(y)), dd = roundSpread(Dinv(x));
     setSpreadDelta(dd);
     if (n !== S.fnumber) { S.fnumber = n; renderShared(); }
     update();
@@ -828,14 +998,14 @@ function drawSpreadMap(container, c, N, d, t) {
 const SP_TOTAL = '#4fe07a', SP_DEFOCUS = '#ff6b6b', SP_DIFF = '#5b7cff';
 function drawSpreadBlur(container, r, c, N) {
   const W = chartWidth(container), Hh = Math.round(Math.min(420, Math.max(260, W * 0.5)));
-  const x0 = 46, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = 4, nMax = 128;
+  const x0 = 46, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = spreadNMin(c), nMax = 128;
   const X = n => x0 + (x1 - x0) * Math.log(n / nMin) / Math.log(nMax / nMin);
   const Ninv = x => nMin * Math.exp((Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(nMax / nMin));
   const top = Math.max(2 * c, 1.6 * r.optimumBlur), bStep = [0.005, 0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1].find(st => top / st <= 6) || 1;
   const yMax = Math.ceil(top / bStep) * bStep, Y = b => y1 - (y1 - y0) * Math.min(b, yMax) / yMax;
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
   if (r.range) { const a = X(Math.max(nMin, r.range[0])), b = X(Math.min(nMax, r.range[1])); if (b > a) svg.append(svgEl('rect', { x: a, y: Y(c), width: b - a, height: y1 - Y(c), fill: SP_TOTAL, opacity: .1 })); }
-  const stops = [4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128], every = (x1 - x0) / (stops.length - 1) >= 30 ? 1 : 2;
+  const stops = SP_STOPS.filter(n => n >= nMin), every = (x1 - x0) / (stops.length - 1) >= 30 ? 1 : 2;
   stops.forEach((n, i) => {
     svg.append(svgEl('line', { x1: X(n), x2: X(n), y1: y0, y2: y1, class: 'grid' }));
     if (i % every === 0) svg.append(svgEl('text', { x: X(n), y: y1 + 14, 'text-anchor': 'middle' }, String(n)));

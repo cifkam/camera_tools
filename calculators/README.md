@@ -22,7 +22,11 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
 `#formats`, `#reciprocity`, `#timetemp`. The address follows the selected tab.
 
 - Depth of field: near/far limits, hyperfocal distance, magnification; a sharp-range bar on a
-  logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable.
+  logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable; and the
+  blur against distance and f-number with diffraction included (defocus f² |x − s| / (N x (s − f))
+  and diffraction N / 750 mm, combined as √(a² + b²)): lines of equal blur, domes over the focus
+  whose top, f/(750 c) for the CoC, is the smallest aperture at which anything is sharp; the depth
+  of field with diffraction shaded, and the least-blurring f-number for each distance.
 - Hyperfocal table by focal length and aperture.
 - DoF table (near – far by focus distance and aperture) for the current lens.
 - Focus spread (view cameras): from the rail travel between focusing on the nearest and the
@@ -34,7 +38,8 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
   positions and the two planes they focus (the light cones behind the lens, the blur discs
   against the CoC, the room for the standard shaded, the depth of field in front; drag the
   standard within the spread, or an image line or the focus to move both) and the blur against
-  the f-number (after Q.-T. Luong's "How to select the f-stop").
+  the f-number (after Q.-T. Luong's "How to select the f-stop"). Spreads from 0.05 mm, for the
+  small CoC of small formats (the charts then start at f/1.4).
 - Formats: crop factors, the equivalent focal length and aperture on another format (matched by
   diagonal, width or height), angles of view, scene coverage at the focus distance, the formats
   drawn to scale and a comparison table of all formats.
